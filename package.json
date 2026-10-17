@@ -1,0 +1,11 @@
+{
+  "name": "background-browser-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node tests/run.cjs",
+    "test:browser": "node tests/run.cjs --browser"
+  }
+}

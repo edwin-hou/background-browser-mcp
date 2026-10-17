@@ -1,0 +1,6 @@
+{
+  "publicBaseUrl": "https://YOUR-ASSIGNED-DOMAIN.ngrok-free.app",
+  "allowedRedirectUris": [
+    "https://chatgpt.com/connector_platform_oauth_redirect"
+  ]
+}

@@ -1,0 +1,3 @@
+version: 3
+agent:
+  web_addr: false

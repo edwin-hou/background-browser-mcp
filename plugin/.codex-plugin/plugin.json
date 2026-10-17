@@ -1,0 +1,16 @@
+{
+  "name": "background-browser-local",
+  "version": "0.1.0",
+  "description": "Browse signed-in websites through your own separate background browser profile.",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Background Browser (local)",
+    "shortDescription": "Use your signed-in browser",
+    "longDescription": "Use a separately installed local browser profile for account tasks. Sign in manually through your private local setup dashboard, then browse headlessly.",
+    "developerName": "Background Browser contributors",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": "Use my background browser for this signed-in website task."
+  }
+}

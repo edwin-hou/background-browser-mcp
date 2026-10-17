@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "background-browser": {
+      "type": "streamable-http",
+      "url": "https://your-assigned-name.ngrok-free.app/mcp"
+    }
+  }
+}
