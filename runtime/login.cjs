@@ -4,18 +4,18 @@ const fs = require('node:fs');
 const { chromeExecutable } = require('./runtime-paths.cjs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { chromium } = require('playwright');
+const { launchManualChrome } = require('./manual-chrome.cjs');
 const { createSessionPersistence } = require('./session-state.cjs');
 const { LOGIN_PIPE, parseLoginOptions, createLoginCommandServer } = require('./login-control.cjs');
 const root = __dirname, token = randomUUID(), pause = path.join(root, 'login.pause');
 const profile = path.join(root, 'profiles', 'default');
 const stateFile = path.join(root, 'login-state.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-let context, commands, ownsPause = false, sessionPersistence, options, finishPromise;
+let context, manualChrome, commands, ownsPause = false, sessionPersistence, options, finishPromise;
 let status = 'starting', startedAt, savedAt, active = false, ownedPipe = false;
 function read(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function removeOwned() { if (read(pause)?.token === token) { try { fs.unlinkSync(pause); } catch {} } }
-function metadata() { return { pid: process.pid, status, active, siteId: options.siteId, siteName: options.siteName, url: options.displayUrl, startedAt, savedAt, authenticationVerified: false }; }
+function metadata() { return { pid: process.pid, status, active, siteId: options.siteId, siteName: options.siteName, url: options.displayUrl, startedAt, savedAt, loginMode: 'standard-chrome', authenticationVerified: false }; }
 function state(next, extra = {}) {
   status = next;
   const temporary = stateFile + '.' + process.pid + '.tmp';
@@ -33,7 +33,10 @@ async function finishCurrent() {
       // An explicit Finish command saves while the context is alive, then closes Chrome.
       await sessionPersistence.stop({ save: true });
       savedAt = new Date().toISOString();
-      await context.close(); context = null;
+      await manualChrome.close();
+      const exit = await manualChrome.closed;
+      if (exit.exitCode !== 0 || exit.signal) throw new Error('The sign-in browser did not close cleanly.');
+      context = null;
       active = false;
       state('session-saved', { finishedVia: 'finish-command' });
     } catch (error) { state('login-open', { error: 'The session could not be saved. Keep this window open and retry Finish.' }); throw error; }
@@ -62,22 +65,26 @@ async function main() {
   }
   if (!paused) throw new Error('The background manager did not release the profile.');
   state('opening-sign-in');
-  context = await chromium.launchPersistentContext(profile, { executablePath: chromeExecutable(root), headless: false, acceptDownloads: false });
+  // Start installed Chrome directly, then attach through Chrome's supported debugging protocol.
+  // The user still performs sign-in; no browser fingerprint or automation properties are changed.
+  manualChrome = await launchManualChrome({ executablePath: chromeExecutable(root), profileDirectory: profile });
+  context = manualChrome.context;
   sessionPersistence = createSessionPersistence(context, profile);
   await sessionPersistence.restore();
   const previousSnapshot = snapshotStat();
   sessionPersistence.start();
-  const closed = new Promise(resolve => context.once('close', resolve));
+  const closed = manualChrome.closed;
   const page = context.pages()[0] || await context.newPage();
   await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   state('login-open');
-  await closed;
+  const exit = await closed;
   if (finishPromise) await finishPromise;
   else {
     await sessionPersistence.stop();
     const latest = snapshotStat();
     active = false;
-    if (latest && (!previousSnapshot || latest.mtimeMs !== previousSnapshot.mtimeMs || latest.ino !== previousSnapshot.ino)) {
+    if (exit.exitCode !== 0 || exit.signal) state('error', { error: 'The sign-in window stopped unexpectedly. Reopen this website and verify the session.' });
+    else if (latest && (!previousSnapshot || latest.mtimeMs !== previousSnapshot.mtimeMs || latest.ino !== previousSnapshot.ino)) {
       savedAt = new Date(latest.mtimeMs).toISOString();
       state('session-saved', { finishedVia: 'window-close' });
     } else state('error', { error: 'No new session checkpoint was confirmed. Reopen sign-in and use Finish after signing in.' });
@@ -85,7 +92,8 @@ async function main() {
   sessionPersistence = null;
   context = null;
 }
-main().catch(() => {
+main().catch(error => {
+  if (error.ownedChrome) manualChrome = error.ownedChrome;
   process.exitCode = 1;
   if (ownedPipe) { active = false; state('error', { error: 'Sign-in did not finish. Reopen the selected site and try again.' }); }
   // Navigation error stacks can include sensitive URL query strings: persist no raw stack/URL.
@@ -94,8 +102,18 @@ main().catch(() => {
   // Pause remains owned until Chrome and its checkpoint writer have fully finished.
   if (context) {
     await sessionPersistence?.stop({ save: true }).catch(() => {});
-    await context.close().catch(() => {});
   } else await sessionPersistence?.stop().catch(() => {});
+  if (manualChrome) {
+    try { await manualChrome.close(); }
+    catch {
+      // Never let the manager reopen a profile still owned by this login process.
+      active = true;
+      state('error', { error: 'The sign-in browser is still open. Close that separate Chrome window to return to background browsing.' });
+      await manualChrome.closed;
+      active = false;
+      state('error', { error: 'Sign-in did not finish. Reopen this website and verify the session.' });
+    }
+  }
   if (ownsPause) removeOwned();
   if (commands) await commands.close();
 });

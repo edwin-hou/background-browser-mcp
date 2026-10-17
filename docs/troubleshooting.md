@@ -6,6 +6,7 @@
 | Dashboard or local MCP is unreachable | Start this installation with its Start shortcut. Inspect management Status. Confirm the PC is signed in and ports 8933–8936 are not occupied by another installation. |
 | A website redirects to sign-in | Renew the session through that website's setup card, save it explicitly, and verify the authenticated page again. A green service status is not a website login. |
 | A login window is already open | Finish that same window and save it before opening another. Do not open another process against the same profile. |
+| Google says the browser or app may not be secure | Retry through the dashboard's sign-in card. The login helper starts installed Chrome directly and then connects through Chrome debugging, using only this installation's separate profile. Check Chrome updates, JavaScript, and unsupported extensions. Google can still decline sign-in; no universal Google-login compatibility is claimed. |
 | MCP appears configured but no browser tools are available | Reload the connection/client and verify tool exposure in the exact chat. Local config does not enable a hosted ChatGPT plugin. |
 | Navigation returns a local file path | Ask for `browser_snapshot` without a filename to get inline page state. |
 | ChatGPT cannot create the plugin in the desktop dialog | Use ChatGPT on the web with the same account; check account/workspace access and the current official setup guide. |
@@ -15,5 +16,9 @@
 | Explicit Stop immediately restarts | Use the project's Stop action rather than killing a browser child. Stop writes durable disabled policy before shutdown. |
 
 Do not “fix” remote access by tunneling ports 8933, 8935, or 8936, disabling gateway authentication, copying cookies, or changing redirect allowlists to wildcards. Preserve your existing profile while diagnosing an issue.
+
+Chrome documents [starting Chrome separately and connecting afterward](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md#connecting-to-a-running-chrome-instance) as an alternative when accounts reject a browser launched through WebDriver. The helper uses a loopback debugging port for this dedicated profile and preserves the existing session handoff. It does not change the user agent, JavaScript fingerprint, automation properties, or Google account security settings. Routine browsing still returns to the headless background service after you save or close the login window. The Google account must be tested again after that transition; manual sign-in success alone does not prove background access.
+
+For Drive, Docs, Sheets, and Slides, a connected Google Drive integration is another option that uses Google's APIs instead of website login. API access and website cookies are separate authorizations. Google's [supported-browser troubleshooting](https://support.google.com/accounts/answer/7675428?co=GENIE.Platform%3DDesktop&hl=en) also lists browser updates, JavaScript, and extensions as checks; do not disable account protection to force a sign-in.
 
 If installation fails, report its sanitized error text and which step failed. Do not post the installation directory, private shortcut, browser artifacts, or raw OAuth/ngrok files as a support bundle.

@@ -30,6 +30,8 @@ Ask Codex: “Use my background browser to open the website I saved and verify t
 
 Your separate profile and session handoff live under the installation folder. This browser does not reuse your personal Chrome profile. Login windows appear only when you start the sign-in flow; ordinary tool calls use headless Chrome. Saved sessions can expire or be invalidated by the website.
 
+The login window starts installed Chrome directly and connects through Chrome's supported debugging interface. Websites can still restrict automated access; this project does not guarantee sign-in to every Google product or other site. See [login troubleshooting](docs/troubleshooting.md).
+
 The private dashboard shortcut contains a local access token. The optional OAuth gateway has a separate owner passphrase. Keep both, your ngrok authtoken, browser data, and OAuth state off GitHub and out of chat messages. Each friend installs their own runtime and signs into their own accounts. Sharing this source does not share the author's browser, app, or accounts.
 
 ## Cost and availability

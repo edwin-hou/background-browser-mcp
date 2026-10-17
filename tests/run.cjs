@@ -17,6 +17,7 @@ const tests = [
   'tests/public-release.test.cjs',
 ];
 if (browser) tests.push(
+  'runtime/test-manual-chrome.cjs',
   'runtime/test-session-state.cjs',
   'runtime/setup/browser-test.cjs',
   'runtime/gateway/browser-consent-test.mjs',
