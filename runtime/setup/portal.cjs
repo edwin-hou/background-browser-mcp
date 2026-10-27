@@ -31,12 +31,29 @@ function settings(input, previous = {}) {
 function writeJson(file, value) { fs.writeFileSync(file + '.tmp', JSON.stringify(value, null, 2), { mode: 0o600 }); fs.renameSync(file + '.tmp', file); }
 // Preserve the Origin on ordinary form POSTs, while omitting paths and query tokens from Referer.
 // no-referrer makes navigation/form Origin null under the Fetch standard.
-const HEADERS = { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+const HEADERS = { 'Content-Security-Policy': "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   'X-Frame-Options':'DENY', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'strict-origin', 'Cache-Control':'no-store, max-age=0',
   'Pragma':'no-cache', 'Cross-Origin-Opener-Policy':'same-origin', 'Permissions-Policy':'camera=(), microphone=(), geolocation=()' };
 const { renderDashboard } = require('./dashboard.cjs');
 const { createSiteStore, validId } = require('./sites.cjs');
 const { finishLogin } = require('../login-control.cjs');
+const { createDashboardHealth } = require('./health.cjs');
+const DASHBOARD_CLIENT = fs.readFileSync(path.join(__dirname, 'dashboard-client.js'), 'utf8');
+function syncSavedSession(sites, state) {
+  if (!state.active && state.status === 'session-saved' && state.savedAt) sites.markSaved(state.siteId, state.savedAt);
+}
+function accountStates(root, sites) {
+  return sites.map(site => {
+    const filename = createHash('sha256').update(site.id).digest('hex') + '.json';
+    const value = read(path.join(root, 'setup', 'account-observations', filename));
+    const valid = value?.version === 1 && value.siteId === site.id && ['sign-in-required', 'verified'].includes(value.state) &&
+      typeof value.observedAt === 'string' && !isNaN(Date.parse(value.observedAt)) &&
+      Date.parse(value.observedAt) <= Date.now() + 60000 &&
+      !(site.lastSavedAt && Date.parse(site.lastSavedAt) > Date.parse(value.observedAt)) &&
+      (value.state !== 'verified' || Date.now() - Date.parse(value.observedAt) < 86400000);
+    return { siteId: site.id, state: valid ? value.state : 'not-checked', observedAt: valid ? value.observedAt : null, savedAt: site.lastSavedAt || null };
+  });
+}
 const PLUGIN_URL = 'https://chatgpt.com/';
 const NOTICES = { 'login-started':'Your sign-in window is opening. Sign in on the website, then return here and save your session.', 'session-saved':'Session saved. Your browser is returning to background mode.', 'site-added':'Website added. Choose Sign in when you are ready.', 'site-removed':'Website shortcut removed. Its browser data was kept.', 'transport-saved':'Connection settings saved. The free connection is starting in the background.' };
 function page(ctx, message = '') { return renderDashboard(ctx, message); }
@@ -52,8 +69,21 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
       const url = new URL(req.url, origin);
       if (url.origin !== origin || url.searchParams.getAll('token').length !== 1 || !same(url.searchParams.get('token'), ctx.token)) return send(403, 'Open your private setup shortcut.');
       const rawPath = req.url.split('?')[0];
-      if (!['/', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
-      if (req.method === 'GET' && url.pathname === '/') return send(200, page(ctx, NOTICES[url.searchParams.get('notice')] || ''), true);
+      if (!['/', '/status', '/dashboard-client.js', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
+      if (req.method === 'GET' && url.pathname === '/') {
+        const connectionHealth = ctx.health ? await ctx.health() : null;
+        return send(200, page({ ...ctx, connectionHealth }, NOTICES[url.searchParams.get('notice')] || ''), true);
+      }
+      if (req.method === 'GET' && url.pathname === '/dashboard-client.js') return send(200, DASHBOARD_CLIENT, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      if (req.method === 'GET' && url.pathname === '/status') {
+        try {
+          const health = ctx.health ? await ctx.health() : { version: 1, mode: 'checking', messageCode: 'checking', local: { state: 'checking' }, remote: { state: 'unconfigured' }, waitingForOwner: false, checkedAt: new Date().toISOString() };
+          const accounts = typeof ctx.accounts === 'function' ? ctx.accounts() : [];
+          const currentLogin = typeof ctx.login === 'function' ? ctx.login() : {};
+          const login = { active: health.mode === 'paused', siteId: /^[a-z0-9][a-z0-9-]{0,79}$/.test(currentLogin.siteId || '') ? currentLogin.siteId : null };
+          return send(200, JSON.stringify({ ...health, accounts, login }), false, { 'Content-Type': 'application/json; charset=utf-8' });
+        } catch { return send(503, JSON.stringify({ error: 'Connection status unavailable.' }), false, { 'Content-Type': 'application/json; charset=utf-8' }); }
+      }
       if (req.method !== 'POST') return send(405, 'Method not allowed.');
       if (req.headers.origin !== origin || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(req.headers['content-type'] || '')) return send(403, 'Invalid setup form origin.');
       let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 8192) return send(413, 'Form too large.'); }
@@ -102,6 +132,7 @@ async function main() {
   const setStatus = (message, extra = {}) => { status = { message, gatewayPid: gateway?.process.pid ?? null, tunnelPid: tunnel?.process.pid ?? null, updated: new Date().toISOString(), ...extra }; writeJson(path.join(__dirname, 'status.json'), status); };
   const saved = () => read(secretFile);
   const sites = createSiteStore(path.join(__dirname, 'sites.json'));
+  const health = createDashboardHealth({ root: ROOT });
   const loginState = () => {
     const latest = read(path.join(ROOT, 'login-state.json')) || {};
     const marker = read(path.join(ROOT, 'login.pause'));
@@ -110,9 +141,9 @@ async function main() {
     if (login && !login.closed && !login.error) return { active: true, status: 'opening', siteId: loginSite?.id, siteName: loginSite?.name, url: loginSite?.url };
     return { ...latest, active: false };
   };
-  const syncSavedSession = () => { const state = loginState(); if (!state.active && state.status === 'session-saved' && state.savedAt) sites.markSaved(state.siteId, state.savedAt); };
   const server = http.createServer(makeHandler({ token, saved, status: () => status, pluginUrl: PLUGIN_URL,
-    sites: () => { syncSavedSession(); return sites.list(); }, browser: () => read(path.join(ROOT, 'service-state.json')) || {}, login: loginState,
+    sites: () => { syncSavedSession(sites, loginState()); return sites.list(); }, browser: () => read(path.join(ROOT, 'service-state.json')) || {}, login: loginState,
+    health: () => health.read(), accounts: () => { syncSavedSession(sites, loginState()); return accountStates(ROOT, sites.list()); },
     owner: () => { try { const text = fs.readFileSync(path.join(ROOT, 'gateway', 'owner-secret.txt'), 'utf8').trim(); return /^[A-Za-z0-9_-]{43}$/.test(text) ? text : ''; } catch { return ''; } },
     save: async value => {
       const linked = read(path.join(ROOT, 'gateway', 'config.json'));
@@ -133,7 +164,7 @@ async function main() {
       if (result.siteId && result.savedAt) sites.markSaved(result.siteId, result.savedAt);
       const completed = read(path.join(ROOT, 'login-state.json'));
       if (completed?.pid === marker.pid && completed.status === 'session-saved' && completed.savedAt) sites.markSaved(completed.siteId, completed.savedAt);
-      syncSavedSession();
+      syncSavedSession(sites, loginState());
       // Acknowledge the handoff in the UI after the manager has had time to resume.
       for (let attempt = 0; attempt < 60; attempt++) {
         const browser = read(path.join(ROOT, 'service-state.json'));
@@ -142,7 +173,11 @@ async function main() {
       }
     },
     addSite: async input => { sites.add(input); },
-    removeSite: async id => { if (loginState().active && loginState().siteId === id) throw new Error('Finish the open sign-in window before removing its shortcut.'); sites.remove(id); }
+    removeSite: async id => {
+      if (loginState().active && loginState().siteId === id) throw new Error('Finish the open sign-in window before removing its shortcut.');
+      sites.remove(id);
+      try { fs.unlinkSync(path.join(ROOT, 'setup', 'account-observations', createHash('sha256').update(id).digest('hex') + '.json')); } catch {}
+    }
   }));
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(8936, '127.0.0.1', resolve); }); }
@@ -188,5 +223,5 @@ async function main() {
     unlock(); await new Promise(resolve => server.close(resolve));
   }
 }
-module.exports = { domain, callback, settings, same, makeHandler, gatewayReady, ORIGIN, STABLE };
+module.exports = { domain, callback, settings, same, makeHandler, gatewayReady, accountStates, syncSavedSession, ORIGIN, STABLE };
 if (require.main === module) main().catch(() => { process.exitCode = 1; });

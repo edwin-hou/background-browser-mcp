@@ -1,0 +1,51 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { accountStates, syncSavedSession } = require('./portal.cjs');
+(async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'background-browser-account-view-'));
+  let checks = 0;
+  const check = (value, message) => { assert.ok(value, message); checks++; };
+  try {
+    const directory = path.join(root, 'setup', 'account-observations');
+    await fs.mkdir(directory, { recursive: true });
+    const site = { id: 'fixture-account', lastSavedAt: new Date(Date.now() - 60000).toISOString() };
+    const filename = path.join(directory, createHash('sha256').update(site.id).digest('hex') + '.json');
+    const put = value => fs.writeFile(filename, JSON.stringify(value));
+    const state = () => accountStates(root, [site])[0];
+    check(state().state === 'not-checked', 'a saved checkpoint never establishes authentication');
+    const required = { version: 1, siteId: site.id, state: 'sign-in-required', observedAt: new Date().toISOString(), reasonCode: 'known-login-form' };
+    await put(required);
+    check(state().state === 'sign-in-required', 'observed sign-in requirement is shown');
+    await put({ ...required, state: 'verified' });
+    check(state().state === 'verified', 'recent protected-page evidence is shown as last verified access');
+    await put({ ...required, state: 'verified', observedAt: new Date(Date.now() - 90000000).toISOString() });
+    check(state().state === 'not-checked', 'stale verification becomes unknown rather than expired');
+    await put(required);
+    const reconnected = accountStates(root, [{ ...site, lastSavedAt: new Date(Date.now() + 1000).toISOString() }])[0];
+    check(reconnected.state === 'not-checked', 'saving a newer session clears old attention without claiming authentication');
+    const store = { markSaved(id, savedAt) { if (id === site.id) site.lastSavedAt = savedAt; } };
+    syncSavedSession(store, { active: false, status: 'session-saved', siteId: site.id, savedAt: new Date(Date.now() + 1000).toISOString() });
+    check(state().state === 'not-checked', 'a window-close save synchronizes the checkpoint before the polled account view');
+    site.lastSavedAt = new Date(Date.now() - 60000).toISOString();
+    await put({ ...required, siteId: 'other-account' });
+    check(state().state === 'not-checked', 'another account observation cannot be attributed to this card');
+    await put({ ...required, state: 'arbitrary-state' });
+    check(state().state === 'not-checked', 'unrecognized status is not exposed');
+    await put({ ...required, observedAt: new Date(Date.now() + 120000).toISOString() });
+    check(state().state === 'not-checked', 'future evidence is rejected');
+    await put({ ...required, privateData: 'FIXTURE_PRIVATE_CONTENT_NOT_A_REAL_SECRET' });
+    check(!JSON.stringify(state()).includes('FIXTURE_PRIVATE_CONTENT'), 'the view never forwards extra private fields');
+    await fs.writeFile(filename, '{malformed');
+    check(state().state === 'not-checked', 'invalid local state fails closed');
+    check(accountStates(root, []).length === 0, 'removed or unrelated accounts are never enumerated');
+    console.log(JSON.stringify({ ok: true, checks, browserLaunched: false, actualAccountDataRead: false }));
+  } finally {
+    const actual = path.resolve(root);
+    if (path.dirname(actual) !== path.resolve(os.tmpdir()) || !path.basename(actual).startsWith('background-browser-account-view-')) throw new Error('Fixture cleanup boundary failed.');
+    await fs.rm(actual, { recursive: true, force: true });
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -33,6 +33,7 @@
 **/service-state.json
 **/login-state.json
 **/sites.json
+**/account-observations/
 **/status.json
 runtime/gateway/config.json
 runtime/setup/ngrok.yml

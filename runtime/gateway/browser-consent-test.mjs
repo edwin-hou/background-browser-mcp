@@ -15,6 +15,7 @@ const callback = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const gateway = createGateway({ config: { publicBaseUrl, allowedRedirectUris: [callback] }, dataDir, testing: true });
 let listener, browser;
 const evidence = [];
+const closedTarget = error => /Target page, context or browser has been closed|Target closed|Session closed|Connection closed/i.test(error?.message || '');
 try {
   const local = await new Promise(resolve => { listener = gateway.app.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${listener.address().port}`)); });
   const registration = await fetch(local + '/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Headless form regression check', redirect_uris: [callback], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: SCOPE }) });
@@ -24,6 +25,9 @@ try {
   for (const mode of expectBroken ? ['current-broken'] : ['simulate-no-referrer', 'current-fixed']) {
     const context = await browser.newContext({ serviceWorkers: 'block' });
     let consentOrigin, consentStatus, authorizationPolicy, callbackUrl, externalRequests = 0, formActionBlocked = false, callbackInterceptedBeforeNetwork = false;
+    let cdp, closing = false, interceptionError, onPaused, onNetwork;
+    const pendingFetch = new Set();
+    try {
     await context.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
@@ -48,16 +52,21 @@ try {
     // Playwright routing runs once per redirect chain. Intercept the callback at CDP Fetch's
     // request stage instead; an invalid loopback proxy and loopback DNS mapping are an independent
     // process-level egress guard in case interception regresses. APIRequestContext proxies fixtures locally.
-    const cdp = await context.newCDPSession(page);
+    cdp = await context.newCDPSession(page);
     await cdp.send('Network.enable');
     const observedPaths = [];
     let resolveCallback;
     const cdpCallback = new Promise(resolve => { resolveCallback = resolve; });
-    cdp.on('Network.requestWillBeSent', event => {
+    onNetwork = event => {
       const url = new URL(event.request.url);
       observedPaths.push(url.origin + url.pathname);
-    });
-    cdp.on('Fetch.requestPaused', async event => {
+    };
+    cdp.on('Network.requestWillBeSent', onNetwork);
+    onPaused = event => {
+      // EventEmitter does not observe an async listener's rejection. Own every
+      // interception promise, and leave new requests paused once cleanup begins.
+      if (closing) return;
+      const work = (async () => {
       const url = new URL(event.request.url);
       if (url.origin + url.pathname === callback) {
         callbackUrl = url;
@@ -65,7 +74,14 @@ try {
         await cdp.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/html' }], body: Buffer.from('<!doctype html><title>Local callback intercept</title><p>OAuth callback intercepted before network.</p>').toString('base64') });
         resolveCallback();
       } else await cdp.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'BlockedByClient' });
-    });
+      })().catch(error => {
+        if (!(closing && closedTarget(error))) interceptionError ||= error;
+        resolveCallback();
+      });
+      pendingFetch.add(work);
+      work.finally(() => pendingFetch.delete(work));
+    };
+    cdp.on('Fetch.requestPaused', onPaused);
     await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://chatgpt.com/*', requestStage: 'Request' }] });
     const verifier = randomBytes(32).toString('base64url');
     const state = randomBytes(16).toString('hex');
@@ -92,13 +108,26 @@ try {
       assert.ok((await page.textContent('body')).includes('Invalid consent origin.'));
       assert.equal(callbackUrl, undefined);
     }
+    assert.ifError(interceptionError);
     assert.equal(externalRequests, 0);
     evidence.push({ mode, authorizationPolicy, actualConsentOrigin: consentOrigin, consentStatus, callbackIntercepted: Boolean(callbackUrl), callbackInterceptedBeforeNetwork, loopbackOnlyProxyEgressGuard: true, callbackHasCode: Boolean(callbackUrl?.searchParams.get('code')), callbackHasExactIssuer: callbackUrl?.searchParams.get('iss') === publicBaseUrl + '/', externalRequests });
-    await context.close();
+    } finally {
+      closing = true;
+      try { await context.close(); }
+      catch (error) { if (!closedTarget(error)) throw error; }
+      finally {
+        if (onPaused) cdp.off('Fetch.requestPaused', onPaused);
+        if (onNetwork) cdp.off('Network.requestWillBeSent', onNetwork);
+        let timer;
+        try { await Promise.race([Promise.all([...pendingFetch]), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Fixture interception cleanup did not settle.')), 2000); })]); }
+        finally { clearTimeout(timer); }
+      }
+      assert.ifError(interceptionError);
+    }
   }
   console.log(JSON.stringify({ ok: true, realChromeHeadless: true, emptyTemporaryProfile: true, noUserProfileOrBackendUsed: true, evidence }));
 } finally {
-  if (browser) await browser.close();
+  if (browser) await browser.close().catch(error => { if (!closedTarget(error)) throw error; });
   await gateway.close();
   if (listener) { listener.closeAllConnections(); await new Promise(resolve => listener.close(resolve)); }
   const target = resolve(dataDir), boundary = resolve(DEFAULT_DIR) + '\\';

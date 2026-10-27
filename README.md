@@ -28,6 +28,8 @@ Your separate profile and session handoff live under the installation folder. Th
 
 The login window starts installed Chrome directly and connects through Chrome's supported debugging interface. Websites can still restrict automated access; this project does not guarantee sign-in to every Google product or other site. See [login troubleshooting](docs/troubleshooting.md).
 
+The private dashboard updates connection status while it is open and highlights confirmed sign-in requirements observed during normal website tasks. Saved sessions and unvisited accounts are shown separately from verified access. Account tasks pause for the owner to reconnect when the browser or required account is unavailable; they do not switch to another browser.
+
 The private dashboard shortcut contains a local access token. The optional OAuth gateway has a separate owner passphrase. Keep both, your ngrok authtoken, browser data, and OAuth state off GitHub and out of chat messages. Each friend installs their own runtime and signs into their own accounts. Sharing this source does not share the author's browser, app, or accounts.
 
 ## Cost and availability

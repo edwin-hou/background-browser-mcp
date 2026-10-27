@@ -16,7 +16,7 @@ import { createBackendForwarder, BackendUnavailableError, isReadOnlyBrowserCall 
 // across a simulated backend restart. No real browser, account, or tunnel runs.
 const dir = await mkdtemp(join(tmpdir(), 'background-browser-transport-'));
 const listeners = [], servers = new Set(), transports = new Set(), sessions = new Map();
-let gateway, client, direct, checks = 0, initialized = 0, missingSessions = 0, backendDown = false, readFailures = 0, failWrite = false;
+let gateway, client, direct, observationFailure, checks = 0, initialized = 0, missingSessions = 0, backendDown = false, readFailures = 0, failWrite = false;
 const calls = [];
 const ok = (condition, label) => { assert.ok(condition, label); checks++; };
 const listen = app => new Promise(resolve => {
@@ -114,10 +114,15 @@ try {
   ok(calls.length === beforeAbort, 'Canceled queued requests never dispatch.');
   ok(isReadOnlyBrowserCall({ name: 'browser_tabs', arguments: { action: 'list' } }) && !isReadOnlyBrowserCall({ name: 'browser_tabs', arguments: { action: 'new' } }), 'Tab observation is distinguished from tab mutation.');
   ok(!isReadOnlyBrowserCall({ name: 'browser_evaluate', arguments: {} }) && !isReadOnlyBrowserCall({ name: 'unknown_tool', arguments: {} }) && !isReadOnlyBrowserCall({ name: 'browser_snapshot', arguments: { filename: 'fixture.txt' } }), 'Evaluation, unknown tools, and local file outputs are never replayed.');
+  observationFailure = createBackendForwarder({ backendUrl: backend + '/mcp', accountObserver: { observeToolResult: async () => { throw new Error('Synthetic observation failure.'); } } });
+  const beforeObservationFailure = calls.length;
+  const observedWrite = await observationFailure.callTool({ name: 'browser_navigate', arguments: { url: 'https://example.invalid/observation-failure' } });
+  ok(observedWrite.content[0].text === 'fixture result' && calls.length === beforeObservationFailure + 1, 'Observation failure cannot fail or repeat a completed browser write.');
   console.log(`PASS: ${checks} backend restart/retry/HTTP transport checks; fake loopback backend only.`);
 } finally {
   await client?.close().catch(() => {});
   await direct?.close().catch(() => {});
+  await observationFailure?.close().catch(() => {});
   await gateway?.close().catch(() => {});
   for (const transport of transports) await transport.close().catch(() => {});
   for (const server of servers) await server.close().catch(() => {});

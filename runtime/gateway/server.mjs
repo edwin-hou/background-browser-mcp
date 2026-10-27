@@ -296,7 +296,7 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
         if (error instanceof BackendUnavailableError) {
           if (res.destroyed) return;
           if (error.retryable) res.status(503).set('Retry-After', String(error.retryAfterSeconds));
-          return res.json({ jsonrpc: '2.0', id: req.body.id, error: { code: -32002, message: error.message, data: { backendUnavailable: true, completion: error.completion, retryable: error.retryable, ...(error.retryable ? { retryAfterSeconds: error.retryAfterSeconds } : {}) } } });
+          return res.json({ jsonrpc: '2.0', id: req.body.id, error: { code: -32002, message: error.message, data: { backendUnavailable: true, completion: error.completion, retryable: error.retryable, waitForOwner: error.waitForOwner, ...(error.retryable ? { retryAfterSeconds: error.retryAfterSeconds } : {}) } } });
         }
         forwardedError = error;
       }
@@ -304,7 +304,7 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
     // MCP does not equate an HTTP disconnect with cancellation of a dispatched
     // action. Finish it once, while avoiding a response write to a gone peer.
     if (res.destroyed) return;
-    const server = new Server({ name: 'private-playwright', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: 'After browser navigation or interaction, call browser_snapshot to read the page inline. Links to local artifact files returned by other browser tools are not accessible to this remote client. Use the dedicated browser profile; sign-in and MFA may require the owner.' });
+    const server = new Server({ name: 'private-playwright', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: 'After browser navigation or interaction, call browser_snapshot to read the page inline. If Background Browser is unavailable, pause the task and wait for its owner to reconnect it through the private setup dashboard; do not keep retrying. An interrupted write may have completed: verify its outcome before repeating it. Local artifact links are not accessible remotely. Use the dedicated profile; sign-in and MFA belong to the owner.' });
     const result = async () => { if (forwardedError) throw forwardedError; return forwarded; };
     server.setRequestHandler(ListToolsRequestSchema, result);
     server.setRequestHandler(CallToolRequestSchema, result);

@@ -41,7 +41,28 @@ async function hit(method, route, options = {}) {
   check(() => assert.equal(page.status, 200)); check(() => assert.equal(page.headers['Cache-Control'], 'no-store, max-age=0'));
   check(() => assert.equal(page.headers['Referrer-Policy'], 'strict-origin')); check(() => assert.equal(page.headers['X-Frame-Options'], 'DENY'));
   check(() => assert.match(page.headers['Content-Security-Policy'], /frame-ancestors 'none'/)); check(() => assert.equal(page.headers['Access-Control-Allow-Origin'], undefined));
-  check(() => assert.ok(page.body.includes('TEST_OWNER_SECRET'))); check(() => assert.ok(!page.body.includes('<script')));
+  check(() => assert.ok(page.body.includes('TEST_OWNER_SECRET')));
+  check(() => assert.equal((page.body.match(/<script\b/g) || []).length, 1));
+  check(() => assert.match(page.body, /<script src="\/dashboard-client\.js\?token=[^"]+" defer><\/script>/));
+  check(() => assert.match(page.headers['Content-Security-Policy'], /script-src 'self'; connect-src 'self'/));
+  check(() => assert.ok(!/script-src[^;]*'unsafe-inline'/.test(page.headers['Content-Security-Policy'])));
+  for (const route of ['/status', '/dashboard-client.js']) {
+    const unauthorized = await hit('GET', route);
+    const wrongHost = await hit('GET', route + auth, { headers: { host: 'evil.test' } });
+    const wrongPeer = await hit('GET', route + auth, { remote: '10.0.0.1' });
+    check(() => assert.equal(unauthorized.status, 403));
+    check(() => assert.equal(wrongHost.status, 403));
+    check(() => assert.equal(wrongPeer.status, 403));
+  }
+  const script = await hit('GET', '/dashboard-client.js' + auth);
+  check(() => assert.equal(script.status, 200));
+  check(() => assert.match(script.headers['Content-Type'], /^application\/javascript/));
+  check(() => assert.ok(!script.body.includes(token) && !script.body.includes('TEST_OWNER_SECRET')));
+  const status = await hit('GET', '/status' + auth);
+  check(() => assert.equal(status.status, 200));
+  check(() => assert.match(status.headers['Content-Type'], /^application\/json/));
+  check(() => assert.equal(JSON.parse(status.body).version, 1));
+  check(() => assert.ok(!status.body.includes(token) && !status.body.includes('TEST_OWNER_SECRET')));
   const login = await hit('POST', '/login' + auth, { body: form }); check(() => assert.equal(login.status, 303)); check(() => assert.equal(logins, 1));
   const save = await hit('POST', '/transport' + auth, { body: form + '&domain=assigned.ngrok-free.dev&authtoken=FAKE_NGROK_TOKEN_12345' });
   check(() => assert.equal(save.status, 303)); check(() => assert.equal(saves, 1)); check(() => assert.ok(!save.body.includes('FAKE_NGROK_TOKEN_12345')));

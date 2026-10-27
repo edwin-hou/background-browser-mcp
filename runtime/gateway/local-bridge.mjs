@@ -13,11 +13,12 @@ export function createLocalBridge({ backendUrl = 'http://127.0.0.1:8933/mcp', st
   let catalogReady = false;
   const server = new Server({ name: 'private-background-browser', version: '1.1.0' }, {
     capabilities: { tools: {} },
-    instructions: 'Use the dedicated background browser profile. After navigation or interaction, read browser_snapshot inline. Preserve unrelated tabs and coordinate one browser workflow at a time. Website sign-in and MFA belong in the user-opened setup window. A connection error does not establish that a submitted action failed; verify its outcome before retrying.',
+    instructions: 'Use the dedicated background browser profile. After navigation or interaction, read browser_snapshot inline. Preserve unrelated tabs and coordinate one browser workflow at a time. Website sign-in and MFA belong in the user-opened setup window. If Background Browser is disconnected or an account needs sign-in, pause the task and wait for the owner to reconnect through the private setup dashboard. Do not switch browsers or guess private information from public search. After reconnection, verify authenticated access before continuing. A connection error does not establish that a submitted action failed; verify its outcome before retrying.',
   });
   const explain = error => {
     if (error instanceof BackendUnavailableError) return new McpError(ErrorCode.InternalError, error.message, {
       completion: error.completion, retryable: error.retryable, retryAfterSeconds: error.retryAfterSeconds,
+      waitForOwner: error.waitForOwner === true,
     });
     return new McpError(ErrorCode.InternalError, 'The background browser request failed. Verify the page before retrying an action.');
   };

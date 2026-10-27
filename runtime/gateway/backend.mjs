@@ -1,16 +1,19 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { fileURLToPath } from 'node:url';
+import { createAccountObserver } from './account-status.mjs';
 
 export class BackendUnavailableError extends Error {
   constructor(completion = 'not-dispatched') {
     super(completion === 'unknown'
       ? 'Browser connection failed after dispatch. The operation may have completed; verify its result before retrying.'
-      : 'The background browser is temporarily unavailable. It may be restarting or paused for sign-in.');
+      : 'The background browser is unavailable. Pause this task and wait for its owner to reconnect it through the private setup dashboard; do not keep retrying.');
     this.name = 'BackendUnavailableError';
     this.code = 'BACKEND_UNAVAILABLE';
     this.completion = completion;
     this.retryable = completion !== 'unknown';
     this.retryAfterSeconds = this.retryable ? 2 : undefined;
+    this.waitForOwner = completion !== 'unknown';
   }
 }
 
@@ -32,7 +35,7 @@ export function isReadOnlyBrowserCall(params) {
   return ['browser_snapshot', 'browser_take_screenshot', 'browser_console_messages', 'browser_network_requests'].includes(params.name);
 }
 
-export function createBackendForwarder({ backendUrl = 'http://127.0.0.1:8933/mcp', connectTimeoutMs = 3000, pingTimeoutMs = 2000, toolTimeoutMs = 120000 } = {}) {
+export function createBackendForwarder({ backendUrl = 'http://127.0.0.1:8933/mcp', connectTimeoutMs = 3000, pingTimeoutMs = 2000, toolTimeoutMs = 120000, accountObserver = createAccountObserver({ root: fileURLToPath(new URL('../', import.meta.url)) }) } = {}) {
   let current, queue = Promise.resolve(), stopped = false;
   const canceled = signal => { if (signal?.aborted) throw signal.reason || new Error('Request canceled.'); };
   const discard = async entry => {
@@ -97,7 +100,11 @@ export function createBackendForwarder({ backendUrl = 'http://127.0.0.1:8933/mcp
   };
   return {
     listTools: (params = {}, options) => execute((client, signal) => client.listTools(params, { timeout: toolTimeoutMs, signal }), true, options),
-    callTool: (params, options) => execute((client, signal) => client.callTool(params, undefined, { timeout: toolTimeoutMs, signal }), isReadOnlyBrowserCall(params), options),
+    callTool: (params, options) => execute(async (client, signal) => {
+      const result = await client.callTool(params, undefined, { timeout: toolTimeoutMs, signal });
+      try { await accountObserver?.observeToolResult(params, result); } catch { /* Observation never changes tool completion or triggers replay. */ }
+      return result;
+    }, isReadOnlyBrowserCall(params), options),
     close: async () => { stopped = true; const entry = current; current = undefined; await discard(entry); },
   };
 }

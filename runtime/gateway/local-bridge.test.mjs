@@ -12,10 +12,11 @@ import { createLocalBridge } from './local-bridge.mjs';
 let checks = 0;
 const check = (condition, message) => { assert.ok(condition, message); checks++; };
 const sessions = new Map(), allTransports = new Set(), backendServers = new Set();
-let initializations = 0, reads = 0, writes = 0, failWrite = false, failRead = false;
+let initializations = 0, reads = 0, writes = 0, failWrite = false, failRead = false, backendOffline = false;
 const descriptors = ['browser_snapshot', 'browser_click'].map(name => ({ name, inputSchema: { type: 'object', additionalProperties: false }, description: 'Local synthetic fixture.' }));
 const backend = http.createServer(async (req, res) => {
   if (req.url !== '/mcp') { res.writeHead(404); return res.end(); }
+  if (backendOffline) { res.writeHead(503, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'Synthetic unavailable backend.' })); }
   if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -81,6 +82,10 @@ try {
   await client.callTool({ name: 'browser_snapshot', arguments: {} });
   check(reads === beforeRead + 2, 'an explicit read-only request recovers once after a dropped response');
   check(transport.pid === pid, 'native connection survived all simulated backend failures');
+  backendOffline = true;
+  await assert.rejects(client.listTools(), error => error.data?.waitForOwner === true && /wait/i.test(error.message)); checks++;
+  backendOffline = false;
+  check((await client.listTools()).tools.length === 2, 'the same connection can verify access after the owner reconnects');
   await client.close(); client = null;
   check(!stderr.trim(), 'bridge emits no unexpected diagnostics or private data');
   console.log(JSON.stringify({ ok: true, checks, syntheticBackendOnly: true, browserLaunched: false, realProfileAccessed: false, sameNativeClientSurvivedRestart: true, uncertainWritesNotReplayed: true }));
