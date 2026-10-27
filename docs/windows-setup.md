@@ -36,7 +36,7 @@ For a source/development check, `-NoStart` prepares the installation without sta
 2. Add the website's HTTPS URL and a display name. A university website card may be included as a removable preset; it carries no login.
 3. Select **Sign in**. This deliberately opens a visible Chrome window using the dedicated profile and pauses background browser access.
 4. Enter passwords, SSO, security keys, and MFA directly on the website. Do not put them in chat or in setup fields intended for the website URL.
-5. Return to the dashboard and select **Save session & return to background**. Closing the login window with X also leaves the most recent checkpoint; the explicit save action confirms the handoff while the browser is alive.
+5. Return to the dashboard and select **Save & close sign-in window**. Closing the login window with X also leaves the most recent checkpoint; the explicit save action confirms the handoff while the browser is alive.
 6. Verify the authenticated page through the connected MCP client. The dashboard's saved-session receipt confirms storage, not successful authentication at a website.
 
 All website cards use the same separate profile. They are shortcuts, not isolated account containers. Removing a card keeps its browser data. Use the website's sign-out action when you intend to log out.

@@ -56,6 +56,19 @@ function accountStates(root, sites) {
     return { siteId: site.id, state: valid ? value.state : 'not-checked', observedAt: valid ? value.observedAt : null, savedAt: site.lastSavedAt || null, lastVerifiedAt };
   });
 }
+function loginView(current = {}, health = null) {
+  const saved = current?.status === 'session-saved' && current.active === false;
+  const failed = current?.status === 'error';
+  // The authenticated pipe exists before Chrome and the page are ready.
+  const paused = health?.mode === 'paused';
+  const canFinish = !saved && paused && current?.status === 'login-open';
+  const opening = !saved && (paused || (current?.active === true && current.helperActive === true));
+  const active = canFinish || opening;
+  const siteId = active && typeof current?.siteId === 'string' && /^[a-z0-9][a-z0-9-]{0,79}$/.test(current.siteId) ? current.siteId : null;
+  const name = typeof current?.siteName === 'string' ? current.siteName.trim() : '';
+  const siteName = active && siteId && name && name.length <= 80 && !/[\u0000-\u001f\u007f<>]/.test(name) ? name : null;
+  return { active, canFinish, failed, phase: canFinish ? 'ready' : opening ? 'opening' : 'idle', siteId, siteName };
+}
 const PLUGIN_URL = 'https://chatgpt.com/';
 const NOTICES = { 'login-started':'Your sign-in window is opening. Sign in on the website, then return here and save your session.', 'session-saved':'Session saved. Your browser is returning to background mode.', 'site-added':'Website added. Choose Sign in when you are ready.', 'site-removed':'Website shortcut removed. Its browser data was kept.', 'transport-saved':'Connection settings saved. The free connection is starting in the background.' };
 function page(ctx, message = '') { return renderDashboard(ctx, message); }
@@ -74,7 +87,8 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
       if (!['/', '/status', '/dashboard-client.js', '/session-view.js', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
       if (req.method === 'GET' && url.pathname === '/') {
         const connectionHealth = ctx.health ? await ctx.health() : null;
-        return send(200, page({ ...ctx, connectionHealth }, NOTICES[url.searchParams.get('notice')] || ''), true);
+        const currentLogin = typeof ctx.login === 'function' ? ctx.login() : {};
+        return send(200, page({ ...ctx, connectionHealth, login: loginView(currentLogin, connectionHealth) }, NOTICES[url.searchParams.get('notice')] || ''), true);
       }
       if (req.method === 'GET' && url.pathname === '/session-view.js') return send(200, SESSION_VIEW, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
       if (req.method === 'GET' && url.pathname === '/dashboard-client.js') return send(200, DASHBOARD_CLIENT, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
@@ -83,7 +97,7 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
           const health = ctx.health ? await ctx.health() : { version: 1, mode: 'checking', messageCode: 'checking', local: { state: 'checking' }, remote: { state: 'unconfigured' }, waitingForOwner: false, checkedAt: new Date().toISOString() };
           const accounts = typeof ctx.accounts === 'function' ? ctx.accounts() : [];
           const currentLogin = typeof ctx.login === 'function' ? ctx.login() : {};
-          const login = { active: health.mode === 'paused', siteId: /^[a-z0-9][a-z0-9-]{0,79}$/.test(currentLogin.siteId || '') ? currentLogin.siteId : null };
+          const login = loginView(currentLogin, health);
           return send(200, JSON.stringify({ ...health, accounts, login }), false, { 'Content-Type': 'application/json; charset=utf-8' });
         } catch { return send(503, JSON.stringify({ error: 'Connection status unavailable.' }), false, { 'Content-Type': 'application/json; charset=utf-8' }); }
       }
@@ -139,10 +153,11 @@ async function main() {
   const loginState = () => {
     const latest = read(path.join(ROOT, 'login-state.json')) || {};
     const marker = read(path.join(ROOT, 'login.pause'));
-    if (latest.status === 'session-saved' && latest.active === false && (!marker || latest.pid === marker.pid) && (!login || login.closed || latest.pid === login.process.pid)) return { ...latest, active: false };
-    if (marker?.pid && latest.pid === marker.pid) return { ...latest, active: true };
-    if (login && !login.closed && !login.error) return { active: true, status: 'opening', siteId: loginSite?.id, siteName: loginSite?.name, url: loginSite?.url };
-    return { ...latest, active: false };
+    const helperActive = Boolean(login && !login.closed && !login.error);
+    if (latest.status === 'session-saved' && latest.active === false && (!marker || latest.pid === marker.pid) && (!login || login.closed || latest.pid === login.process.pid)) return { ...latest, active: false, helperActive: false };
+    if (marker?.pid && latest.pid === marker.pid) return { ...latest, active: true, helperActive: helperActive && latest.pid === login.process.pid };
+    if (helperActive) return { active: true, helperActive: true, status: 'opening', siteId: loginSite?.id, siteName: loginSite?.name, url: loginSite?.url };
+    return { ...latest, active: false, helperActive: false };
   };
   const server = http.createServer(makeHandler({ token, saved, status: () => status, pluginUrl: PLUGIN_URL,
     sites: () => { syncSavedSession(sites, loginState()); return sites.list(); }, browser: () => read(path.join(ROOT, 'service-state.json')) || {}, login: loginState,
@@ -226,5 +241,5 @@ async function main() {
     unlock(); await new Promise(resolve => server.close(resolve));
   }
 }
-module.exports = { domain, callback, settings, same, makeHandler, gatewayReady, accountStates, syncSavedSession, ORIGIN, STABLE };
+module.exports = { domain, callback, settings, same, makeHandler, gatewayReady, accountStates, syncSavedSession, loginView, ORIGIN, STABLE };
 if (require.main === module) main().catch(() => { process.exitCode = 1; });

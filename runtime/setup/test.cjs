@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict'), { Readable } = require('node:stream');
-const { domain, callback, settings, same, makeHandler, ORIGIN, STABLE } = require('./portal.cjs');
+const { domain, callback, settings, same, makeHandler, loginView, ORIGIN, STABLE } = require('./portal.cjs');
 let checks = 0;
 function check(fn) { fn(); checks++; }
 check(() => assert.equal(domain('assigned-name.ngrok-free.app'), 'https://assigned-name.ngrok-free.app'));
@@ -13,9 +13,31 @@ for (const bad of ['http://chatgpt.com/connector/oauth/abc', 'https://chatgpt.co
 check(() => assert.throws(() => settings({ domain: 'a.ngrok-free.app', authtoken: 'bad token\nvalue' })));
 check(() => assert.equal(settings({ domain: 'a.ngrok-free.app' }, { authtoken: 'FAKE_SAVED_AUTHTOKEN_123' }).authtoken, 'FAKE_SAVED_AUTHTOKEN_123'));
 check(() => assert.equal(same('secret', 'wrong'), false));
-let saved = null, saves = 0, logins = 0;
+const fixtureLogin = { active: true, helperActive: true, status: 'opening', siteId: 'fixture-website', siteName: 'Fixture website', url: 'https://private.example/TEST_PRIVATE_URL', token: 'TEST_PRIVATE_LOGIN_TOKEN' };
+check(() => assert.deepEqual(loginView(fixtureLogin, { mode: 'checking' }), { active: true, canFinish: false, failed: false, phase: 'opening', siteId: 'fixture-website', siteName: 'Fixture website' }));
+check(() => assert.equal(loginView(fixtureLogin, { mode: 'paused' }).canFinish, false));
+check(() => assert.equal(loginView(fixtureLogin, { mode: 'paused' }).phase, 'opening'));
+for (const status of ['starting', 'waiting-for-profile', 'opening-sign-in', 'saving-session']) {
+  check(() => assert.deepEqual(loginView({ ...fixtureLogin, status, helperActive: false }, { mode: 'paused' }), { active: true, canFinish: false, failed: false, phase: 'opening', siteId: 'fixture-website', siteName: 'Fixture website' }));
+}
+check(() => assert.equal(loginView({ ...fixtureLogin, status: 'login-open' }, { mode: 'paused' }).canFinish, true));
+check(() => assert.equal(loginView({ ...fixtureLogin, status: 'login-open' }, { mode: 'paused' }).phase, 'ready'));
+check(() => assert.deepEqual(loginView({ ...fixtureLogin, helperActive: false }, { mode: 'online' }), { active: false, canFinish: false, failed: false, phase: 'idle', siteId: null, siteName: null }));
+check(() => assert.equal(loginView({ ...fixtureLogin, status: 'session-saved', active: false }, { mode: 'paused' }).canFinish, false));
+check(() => assert.equal(loginView({ ...fixtureLogin, status: 'session-saved', active: false }, { mode: 'paused' }).phase, 'idle'));
+check(() => assert.equal(loginView(null, { mode: 'online' }).active, false));
+check(() => assert.equal(loginView(fixtureLogin).canFinish, false));
+for (const name of ['<script>unsafe</script>', 'bad\nname', 'x'.repeat(81)]) check(() => assert.equal(loginView({ ...fixtureLogin, siteName: name }, { mode: 'paused' }).siteName, null));
+for (const id of ['../private', 123, 'invalid id']) check(() => assert.equal(loginView({ ...fixtureLogin, siteId: id }, { mode: 'paused' }).siteId, null));
+check(() => assert.ok(!JSON.stringify(loginView(fixtureLogin, { mode: 'paused' })).includes('TEST_PRIVATE')));
+const failedFixture = { status: 'error', active: false, error: 'TEST_PRIVATE_LOGIN_ERROR https://private.example/TEST_PRIVATE_PATH', url: 'https://private.example/TEST_PRIVATE_PATH' };
+check(() => assert.deepEqual(loginView(failedFixture, { mode: 'online' }), { active: false, canFinish: false, failed: true, phase: 'idle', siteId: null, siteName: null }));
+check(() => assert.ok(!JSON.stringify(loginView(failedFixture, { mode: 'online' })).includes('TEST_PRIVATE')));
+check(() => assert.equal(loginView({ status: 'session-saved', active: false, error: failedFixture.error }, { mode: 'online' }).failed, false));
+let saved = null, saves = 0, logins = 0, finishes = 0;
+let currentLogin = { active: false }, healthState = { version: 1, mode: 'online', local: { state: 'online' }, remote: { state: 'unconfigured' } };
 const token = 'TEST_LOCAL_SETUP_TOKEN_1234567890123456789012';
-const handler = makeHandler({ token, saved: () => saved, status: () => ({ message: 'Test status' }), owner: () => 'TEST_OWNER_SECRET', sites: () => [{id:'vanderbilt-brightspace',name:'Vanderbilt Brightspace',url:'https://brightspace.vanderbilt.edu/'}], browser: () => ({ready:true,headless:true,status:'running'}), login: () => ({active:false}), startLogin: async () => { logins++; }, finishLogin: async () => {}, addSite: async () => {}, removeSite: async () => {}, save: async value => { saved = value; saves++; } });
+const handler = makeHandler({ token, saved: () => saved, status: () => ({ message: 'Test status' }), owner: () => 'TEST_OWNER_SECRET', sites: () => [{id:'vanderbilt-brightspace',name:'Vanderbilt Brightspace',url:'https://brightspace.vanderbilt.edu/'}], browser: () => ({ready:true,headless:true,status:'running'}), health: async () => healthState, login: () => currentLogin, startLogin: async () => { logins++; }, finishLogin: async () => { finishes++; }, addSite: async () => {}, removeSite: async () => {}, save: async value => { saved = value; saves++; } });
 async function hit(method, route, options = {}) {
   const req = Readable.from([Buffer.from(options.body || '')]); req.method = method; req.url = route;
   req.headers = { host: '127.0.0.1:8936', origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded', ...options.headers };
@@ -68,7 +90,33 @@ async function hit(method, route, options = {}) {
   check(() => assert.match(status.headers['Content-Type'], /^application\/json/));
   check(() => assert.equal(JSON.parse(status.body).version, 1));
   check(() => assert.ok(!status.body.includes(token) && !status.body.includes('TEST_OWNER_SECRET')));
+  check(() => assert.deepEqual(JSON.parse(status.body).login, { active: false, canFinish: false, failed: false, phase: 'idle', siteId: null, siteName: null }));
+  currentLogin = fixtureLogin; healthState = { ...healthState, mode: 'checking' };
+  const opening = await hit('GET', '/status' + auth);
+  check(() => assert.deepEqual(JSON.parse(opening.body).login, loginView(fixtureLogin, healthState)));
+  check(() => assert.ok(!opening.body.includes('TEST_PRIVATE') && !opening.body.includes('private.example')));
+  healthState = { ...healthState, mode: 'paused' };
+  const pausedOpening = await hit('GET', '/status' + auth);
+  check(() => assert.equal(JSON.parse(pausedOpening.body).login.canFinish, false));
+  check(() => assert.equal(JSON.parse(pausedOpening.body).login.phase, 'opening'));
+  currentLogin = { ...fixtureLogin, status: 'login-open' };
+  const ready = await hit('GET', '/status' + auth);
+  check(() => assert.equal(JSON.parse(ready.body).login.canFinish, true));
+  check(() => assert.equal(JSON.parse(ready.body).login.phase, 'ready'));
+  currentLogin = { ...fixtureLogin, active: false, status: 'session-saved' };
+  const completed = await hit('GET', '/status' + auth);
+  check(() => assert.deepEqual(JSON.parse(completed.body).login, { active: false, canFinish: false, failed: false, phase: 'idle', siteId: null, siteName: null }));
+  currentLogin = { ...fixtureLogin, helperActive: false }; healthState = { ...healthState, mode: 'online' };
+  const stale = await hit('GET', '/status' + auth);
+  check(() => assert.equal(JSON.parse(stale.body).login.active, false));
+  check(() => assert.equal(JSON.parse(stale.body).login.canFinish, false));
+  currentLogin = failedFixture;
+  const failedStatus = await hit('GET', '/status' + auth);
+  check(() => assert.equal(JSON.parse(failedStatus.body).login.failed, true));
+  check(() => assert.ok(!failedStatus.body.includes('TEST_PRIVATE') && !failedStatus.body.includes('private.example')));
+  currentLogin = { active: false };
   const login = await hit('POST', '/login' + auth, { body: form }); check(() => assert.equal(login.status, 303)); check(() => assert.equal(logins, 1));
+  const finish = await hit('POST', '/login/finish' + auth, { body: form }); check(() => assert.equal(finish.status, 303)); check(() => assert.equal(finishes, 1));
   const save = await hit('POST', '/transport' + auth, { body: form + '&domain=assigned.ngrok-free.dev&authtoken=FAKE_NGROK_TOKEN_12345' });
   check(() => assert.equal(save.status, 303)); check(() => assert.equal(saves, 1)); check(() => assert.ok(!save.body.includes('FAKE_NGROK_TOKEN_12345')));
   console.log(checks + ' portal validation and CSRF checks passed; no server or browser launched.');

@@ -6,7 +6,7 @@
   const sessionDetailsReady = typeof sessionApi?.sessionView === 'function' && typeof sessionApi?.summarize === 'function';
   const statusUrl = new URL('/status', location.origin);
   statusUrl.searchParams.set('token', new URL(location.href).searchParams.get('token') || '');
-  let pending = false, failures = 0, previous = '', timer;
+  let pending = false, finishing = false, failures = 0, previous = '', timer;
   const text = (id, value) => { const element = document.getElementById(id); if (element && element.textContent !== value) element.textContent = value; };
   const labels = { online: 'Connected', offline: 'Offline', paused: 'Signing in', stopped: 'Stopped', checking: 'Checking', unconfigured: 'Not configured' };
   function render(health) {
@@ -20,7 +20,7 @@
     let required = 0;
     const sessionViews = [];
     const setTime = (element, info) => { if (!element) return; element.textContent = info.label; element.title = info.title; if (info.iso) element.setAttribute('datetime', info.iso); else element.removeAttribute('datetime'); };
-    for (const button of document.querySelectorAll('.site-action button')) button.disabled = health.local.state !== 'online';
+    for (const button of document.querySelectorAll('.site-action button')) button.disabled = health.local.state !== 'online' || health.login?.active === true;
     for (const record of health.accounts.slice(0, 100)) {
       if (!record || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(record.siteId) || !['verified', 'sign-in-required', 'not-checked'].includes(record.state)) continue;
       const card = Array.from(document.querySelectorAll('[data-site-id]')).find(element => element.dataset.siteId === record.siteId);
@@ -81,14 +81,26 @@
       if (browserDetail) browserDetail.textContent = { online: 'Ready for your next task. No browser window needed.', offline: 'Browsing is waiting for you to reconnect.', paused: 'Complete sign-in, then save your session.', stopped: 'Start Background Browser when you are ready to reconnect.', checking: 'Checking your dedicated browser connection.' }[health.local.state] || 'Checking your dedicated browser connection.';
     }
     const loginPanel = document.querySelector('.login-panel');
-    if (loginPanel && health.local.state === 'online') loginPanel.hidden = true;
-    else if (loginPanel && health.mode === 'paused') loginPanel.hidden = false;
+    const phase = ['idle', 'opening', 'ready'].includes(health.login?.phase) ? health.login.phase : 'idle';
+    if (loginPanel) { loginPanel.hidden = false; loginPanel.dataset.loginPhase = phase; loginPanel.dataset.loginFailed = String(health.login?.failed === true); }
+    const site = health.login?.siteName || 'your website';
+    text('login-title', phase === 'ready' ? 'Finish connecting ' + site : phase === 'opening' ? 'Opening ' + site : health.login?.failed === true ? 'Sign-in did not finish' : 'Sign-in window');
+    text('login-detail', phase === 'ready' ? 'Finish signing in, then save to close the window and return to background browsing.' : phase === 'opening' ? 'Wait for the window to open, then complete sign-in.' : health.login?.failed === true ? 'Open the website again to finish sign-in and save its session.' : 'No sign-in window is open.');
+    const finishButton = document.getElementById('finish-login-button');
+    if (finishButton) finishButton.disabled = finishing || phase !== 'ready' || health.login?.canFinish !== true;
+
   }
   function unavailable(accessDenied = false) {
     const key = accessDenied ? 'access-required' : 'dashboard-offline';
     if (previous === key) return;
     previous = key; panel.dataset.health = 'offline';
     for (const button of document.querySelectorAll('.site-action button')) button.disabled = true;
+    const finishButton = document.getElementById('finish-login-button');
+    if (finishButton) finishButton.disabled = true;
+    const loginPanel = document.querySelector('.login-panel');
+    if (loginPanel) { loginPanel.hidden = false; loginPanel.dataset.loginPhase = 'unavailable'; }
+    text('login-title', 'Sign-in window status unavailable');
+    text('login-detail', 'The save button will be available when the connection can verify your sign-in window.');
     text('connection-health-title', accessDenied ? 'Open your private setup shortcut' : 'Connection status is unavailable');
     text('connection-health-detail', accessDenied ? 'This page no longer has setup access. Reopen your saved shortcut; browser tasks will wait for reconnection.' : 'Browser tasks are waiting. Reopen your setup shortcut after the local service reconnects. This page will keep checking.');
     text('local-connection-state', 'Status unavailable'); text('remote-connection-state', 'Status unavailable');
@@ -110,6 +122,20 @@
       timer = setTimeout(poll, document.hidden || failures >= 3 ? 15000 : 5000);
     }
   }
+  const finishForm = document.getElementById('finish-login-button')?.closest('form');
+  finishForm?.addEventListener('submit', event => {
+    if (finishing) { event.preventDefault(); return; }
+    finishing = true;
+    const button = document.getElementById('finish-login-button');
+    button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Saving session…';
+  });
+  for (const link of document.querySelectorAll('a[href^="#"]')) link.addEventListener('click', () => {
+    const id = link.getAttribute('href').slice(1);
+    if (!['add-website', 'connections', 'connection-settings'].includes(id)) return;
+    const target = document.getElementById(id);
+    const details = target?.tagName === 'DETAILS' ? target : target?.querySelector('details');
+    if (details) details.open = true;
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearTimeout(timer); poll(); } });
   poll();
 })();

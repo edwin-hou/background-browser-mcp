@@ -14,7 +14,7 @@ const SOURCE_FILES = Object.freeze([
   'login-control.cjs', 'manual-chrome.cjs', 'session-state.cjs', 'mcp-guardian.cjs',
   'availability.cjs', 'availability-processes.ps1', 'BrowserAvailability.cs', 'runtime-paths.cjs',
   'gateway/server.mjs', 'gateway/backend.mjs', 'gateway/local-bridge.mjs', 'gateway/account-status.mjs', 'gateway/config.example.json',
-  'setup/portal.cjs', 'setup/dashboard.cjs', 'setup/dashboard-client.js', 'setup/session-view.js', 'setup/health.cjs', 'setup/sites.cjs', 'setup/ngrok.example.yml'
+  'setup/portal.cjs', 'setup/dashboard.cjs', 'setup/compact-styles.cjs', 'setup/dashboard-client.js', 'setup/session-view.js', 'setup/health.cjs', 'setup/sites.cjs', 'setup/ngrok.example.yml'
 ]);
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 

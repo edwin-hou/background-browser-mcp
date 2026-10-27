@@ -9,7 +9,7 @@ The local MCP endpoint is `http://127.0.0.1:8933/mcp`. A separately configured r
 
 After navigation or interaction, call `browser_snapshot` without a filename when necessary to read inline state. Navigation/click results can point to PC-local artifacts unavailable to a remote host. Leave screenshot filenames unset for inline images. Do not use server-process code execution, local upload/drop tools, or arbitrary artifact filenames for account browsing.
 
-If a saved website session expires or a new account is needed, direct the user to their private **Open browser setup.url** shortcut. They choose the website card, open its login window, enter passwords/SSO/MFA directly on the website, and select **Save session & return to background**. Do not open a visible login window automatically or repeatedly request sign-in while an authenticated session works.
+If a saved website session expires or a new account is needed, direct the user to their private **Open browser setup.url** shortcut. They choose the website card, open its login window, enter passwords/SSO/MFA directly on the website, and select **Save & close sign-in window**. Do not open a visible login window automatically or repeatedly request sign-in while an authenticated session works.
 
 Never ask for passwords, MFA codes, cookies, the dashboard URL token, ngrok authtoken, or the OAuth owner passphrase in chat. Do not copy profile or credential files. The passphrase belongs only on the owner's own gateway consent page.
 

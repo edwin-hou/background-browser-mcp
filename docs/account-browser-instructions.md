@@ -4,7 +4,7 @@ Use the dedicated Background Browser first for the user's requested signed-in we
 
 Use the configured local Playwright MCP connection or the user's own connected remote Background Browser. Both use the same profile, so perform one browser workflow at a time. After navigation or interaction, use `browser_snapshot` without a filename when needed to obtain inline page state. Do not invent unavailable tools or rely on remote access to local artifact paths.
 
-If a website requires sign-in, direct the user to their private **Open browser setup.url** shortcut. The user opens the matching website's login window, enters credentials/MFA on the website, and selects **Save session & return to background**. Do not open a visible login window automatically or repeatedly request sign-in while a session works.
+If a website requires sign-in, direct the user to their private **Open browser setup.url** shortcut. The user opens the matching website's login window, enters credentials/MFA on the website, and selects **Save & close sign-in window**. Do not open a visible login window automatically or repeatedly request sign-in while a session works.
 
 Never request passwords, MFA codes, cookies, the dashboard's URL token, ngrok authtoken, or the gateway owner passphrase in chat. Do not copy profile or credential files. Preserve personal Chrome, foreground focus, and unrelated tabs. Create task-owned tabs when appropriate and close only exact tabs created for the current task.
 
