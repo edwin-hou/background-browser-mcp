@@ -42,11 +42,12 @@ async function hit(method, route, options = {}) {
   check(() => assert.equal(page.headers['Referrer-Policy'], 'strict-origin')); check(() => assert.equal(page.headers['X-Frame-Options'], 'DENY'));
   check(() => assert.match(page.headers['Content-Security-Policy'], /frame-ancestors 'none'/)); check(() => assert.equal(page.headers['Access-Control-Allow-Origin'], undefined));
   check(() => assert.ok(page.body.includes('TEST_OWNER_SECRET')));
-  check(() => assert.equal((page.body.match(/<script\b/g) || []).length, 1));
+  check(() => assert.equal((page.body.match(/<script\b/g) || []).length, 2));
   check(() => assert.match(page.body, /<script src="\/dashboard-client\.js\?token=[^"]+" defer><\/script>/));
   check(() => assert.match(page.headers['Content-Security-Policy'], /script-src 'self'; connect-src 'self'/));
   check(() => assert.ok(!/script-src[^;]*'unsafe-inline'/.test(page.headers['Content-Security-Policy'])));
-  for (const route of ['/status', '/dashboard-client.js']) {
+  check(() => assert.match(page.body, /<script src="\/session-view\.js\?token=[^"]+" defer><\/script>/));
+  for (const route of ['/status', '/dashboard-client.js', '/session-view.js']) {
     const unauthorized = await hit('GET', route);
     const wrongHost = await hit('GET', route + auth, { headers: { host: 'evil.test' } });
     const wrongPeer = await hit('GET', route + auth, { remote: '10.0.0.1' });
@@ -58,6 +59,10 @@ async function hit(method, route, options = {}) {
   check(() => assert.equal(script.status, 200));
   check(() => assert.match(script.headers['Content-Type'], /^application\/javascript/));
   check(() => assert.ok(!script.body.includes(token) && !script.body.includes('TEST_OWNER_SECRET')));
+  const sessionScript = await hit('GET', '/session-view.js' + auth);
+  check(() => assert.equal(sessionScript.status, 200));
+  check(() => assert.match(sessionScript.headers['Content-Type'], /^application\/javascript/));
+  check(() => assert.ok(!sessionScript.body.includes(token) && !sessionScript.body.includes('TEST_OWNER_SECRET')));
   const status = await hit('GET', '/status' + auth);
   check(() => assert.equal(status.status, 200));
   check(() => assert.match(status.headers['Content-Type'], /^application\/json/));

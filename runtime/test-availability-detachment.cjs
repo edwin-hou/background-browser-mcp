@@ -41,18 +41,39 @@ function EndFixture($binding) {
     if(!$binding.process.WaitForExit(5000)){throw 'Fixture did not exit.'}
   }
 }
+function ReadFixtureHeartbeat([string]$File,[int]$WorkerId) {
+  try {
+    $beat=Get-Content -LiteralPath $File -Raw|ConvertFrom-Json
+    if($beat.pid -eq $WorkerId -and $beat.n -is [ValueType] -and $beat.n -gt 0){return $beat}
+  }catch{}
+  # The fixture writer can be between truncate and write. An incomplete read
+  # is not evidence of either progress or failure.
+  return $null
+}
 $parent=$null;$child=$null
 try {
   $parent=OpenFixture $Controller $Driver (Join-Path $Root 'controller.cjs')
   $child=OpenFixture $Worker $Controller (Join-Path $Root 'service.cjs')
   $heartbeat=Join-Path $Root 'service.cjs.heartbeat'
-  $before=(Get-Content -LiteralPath $heartbeat -Raw|ConvertFrom-Json).n
+  $readyWatch=[Diagnostics.Stopwatch]::StartNew();$before=$null
+  while(!$before -and !$child.process.HasExited -and $readyWatch.ElapsedMilliseconds -lt 5000){
+    $before=ReadFixtureHeartbeat $heartbeat $Worker
+    if(!$before){Start-Sleep -Milliseconds 25}
+  }
+  if(!$before){throw 'The exact fixture worker did not publish a valid heartbeat.'}
   EndFixture $parent
   $survived=!$child.process.WaitForExit(800)
-  Start-Sleep -Milliseconds 200
-  $after=(Get-Content -LiteralPath $heartbeat -Raw|ConvertFrom-Json).n
+  $advanced=$false;$postExit=$null;$progressWatch=[Diagnostics.Stopwatch]::StartNew()
+  while($survived -and !$child.process.HasExited -and $progressWatch.ElapsedMilliseconds -lt 5000){
+    $beat=ReadFixtureHeartbeat $heartbeat $Worker
+    if($beat){
+      if(!$postExit){$postExit=$beat.n}
+      elseif($beat.n -gt $postExit){$advanced=$true;break}
+    }
+    Start-Sleep -Milliseconds 25
+  }
   EndFixture $child
-  @{controllerExited=$parent.process.HasExited;workerSurvived=$survived;heartbeatAdvanced=($after -gt $before);workerCleaned=$child.process.HasExited}|ConvertTo-Json -Compress
+  @{controllerExited=$parent.process.HasExited;workerSurvived=$survived;heartbeatAdvanced=$advanced;workerCleaned=$child.process.HasExited}|ConvertTo-Json -Compress
 }finally{
   if($child){try{EndFixture $child}finally{$child.process.Dispose()}}
   if($parent){try{EndFixture $parent}finally{$parent.process.Dispose()}}
@@ -60,20 +81,26 @@ try {
 `);
   try {
     for (const mode of ['baseline', 'production']) {
-      await fs.unlink(path.join(fixture, 'ready.json')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      for (const file of ['ready.json', 'service.cjs.heartbeat']) {
+        await fs.unlink(path.join(fixture, file)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      }
       const child = spawn(process.execPath, [controllerFile, fixture, mode, moduleFile], { shell: false, windowsHide: true, stdio: 'ignore' });
       cleanupConfirmed = false;
       try {
         let ready;
         for (let attempt=0;attempt<100;attempt++) {
-          try { ready=JSON.parse(await fs.readFile(path.join(fixture,'ready.json'),'utf8')); await fs.access(path.join(fixture,'service.cjs.heartbeat')); break; } catch {}
+          try {
+            ready=JSON.parse(await fs.readFile(path.join(fixture,'ready.json'),'utf8'));
+            const beat=JSON.parse(await fs.readFile(path.join(fixture,'service.cjs.heartbeat'),'utf8'));
+            if(ready.parent===child.pid&&beat.pid===ready.child&&Number.isSafeInteger(beat.n)&&beat.n>0)break;
+          } catch {}
           await sleep(50);
         }
         assert.equal(ready?.parent,child.pid,'Only the exact spawned controller is eligible for termination.');
         const response=await execute(path.join(process.env.SystemRoot||'C:/Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),[
           '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,
           '-Controller',String(ready.parent),'-Worker',String(ready.child),'-Driver',String(process.pid),'-Root',fixture,'-NodeImage',process.execPath
-        ],{shell:false,windowsHide:true,timeout:15000,maxBuffer:100000});
+        ],{shell:false,windowsHide:true,timeout:25000,maxBuffer:100000});
         const result=JSON.parse(response.stdout);cleanupConfirmed=result.workerCleaned===true;
         results.push({mode,...result});
         assert.ok(result.controllerExited&&result.workerCleaned,'Exact fixture handles were terminated and confirmed exited.');

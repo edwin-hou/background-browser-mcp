@@ -2,6 +2,8 @@
 (() => {
   const panel = document.getElementById('connection-health');
   if (!panel) return;
+  const sessionApi = globalThis.PrivateBrowserSessions;
+  const sessionDetailsReady = typeof sessionApi?.sessionView === 'function' && typeof sessionApi?.summarize === 'function';
   const statusUrl = new URL('/status', location.origin);
   statusUrl.searchParams.set('token', new URL(location.href).searchParams.get('token') || '');
   let pending = false, failures = 0, previous = '', timer;
@@ -16,26 +18,52 @@
     if (mode === 'paused') { title = 'Waiting for you to finish signing in'; detail = 'Finish in the separate login window, then save the session to return to background browsing.'; }
     if (mode === 'stopped') { title = 'Background Browser is stopped'; detail = 'Browser tasks are waiting. Start Background Browser when you are ready to reconnect.'; }
     let required = 0;
+    const sessionViews = [];
+    const setTime = (element, info) => { if (!element) return; element.textContent = info.label; element.title = info.title; if (info.iso) element.setAttribute('datetime', info.iso); else element.removeAttribute('datetime'); };
     for (const button of document.querySelectorAll('.site-action button')) button.disabled = health.local.state !== 'online';
     for (const record of health.accounts.slice(0, 100)) {
       if (!record || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(record.siteId) || !['verified', 'sign-in-required', 'not-checked'].includes(record.state)) continue;
       const card = Array.from(document.querySelectorAll('[data-site-id]')).find(element => element.dataset.siteId === record.siteId);
       if (!card) continue;
-      const session = card.querySelector('.session-state');
       const activeLogin = health.login?.active === true && health.login.siteId === record.siteId;
+      if (!sessionDetailsReady) {
+        const requiresSignIn = record.state === 'sign-in-required';
+        card.dataset.sessionKind = requiresSignIn ? 'required' : 'unverified';
+        const label = card.querySelector('.account-label'), detail = card.querySelector('.account-detail');
+        if (label) label.textContent = requiresSignIn ? 'Sign-in required' : 'Session details unavailable';
+        if (detail) detail.textContent = requiresSignIn ? 'Browsing is waiting for you to reconnect this account.' : 'Refresh this page to load sign-in history. Connection checks are still running.';
+        if (requiresSignIn) required++;
+        continue;
+      }
+      const view = sessionApi.sessionView(record, { active: activeLogin });
+      sessionViews.push(view);
+      const session = card.querySelector('.session-state');
       if (session) {
         session.classList.toggle('is-active', activeLogin);
-        session.classList.toggle('is-saved', !activeLogin && Boolean(record.savedAt || card.dataset.saved === 'true'));
-        if (record.savedAt) card.dataset.saved = 'true';
-        if (session.querySelector('span') && (activeLogin || record.savedAt)) session.querySelector('span').textContent = activeLogin ? 'Sign-in in progress' : 'Session saved';
+        session.classList.toggle('is-saved', !activeLogin && Boolean(view.saved.iso));
+        if (session.querySelector('span')) session.querySelector('span').textContent = activeLogin ? 'Sign-in in progress' : view.saved.iso ? 'Session saved in this browser' : 'No saved checkpoint';
       }
-      const label = card.querySelector('.account-label'), explanation = card.querySelector('.account-detail'), action = card.querySelector('.action-label');
-      const values = record.state === 'sign-in-required' ? ['Sign-in required', 'Browsing is waiting for you to reconnect this account.', 'Reconnect account'] : record.state === 'verified' ? ['Last access verified', 'Verified during a website task. The site may ask you to sign in again later.', 'Sign in again'] : ['Sign-in status not checked', 'Your saved session will be checked during the next website task.', card.dataset.saved === 'true' ? 'Sign in again' : 'Connect website'];
+      card.dataset.saved = String(Boolean(view.saved.iso));
       card.dataset.accountState = record.state;
-      if (label && label.textContent !== values[0]) label.textContent = values[0];
-      if (explanation && explanation.textContent !== values[1]) explanation.textContent = values[1];
-      if (action && action.textContent !== values[2]) action.textContent = values[2];
-      if (record.state === 'sign-in-required') required++;
+      card.dataset.sessionKind = view.kind;
+      const label = card.querySelector('.account-label'), explanation = card.querySelector('.account-detail'), action = card.querySelector('.action-label');
+      if (label) label.textContent = view.label;
+      if (explanation) explanation.textContent = view.detail;
+      if (action) action.textContent = view.actionLabel;
+      const button = card.querySelector('.site-action button');
+      if (button) { const prominent = ['required', 'never-saved'].includes(view.kind); button.classList.toggle('secondary', prominent); button.classList.toggle('subtle', !prominent); }
+      setTime(card.querySelector('.saved-time'), view.saved);
+      setTime(card.querySelector('.verified-time'), view.verified);
+      if (view.bucket === 'required') required++;
+    }
+    if (sessionDetailsReady) {
+      const sessionCounts = sessionApi.summarize(sessionViews);
+      for (const [key, count] of Object.entries(sessionCounts)) text('session-count-' + key, String(count));
+    } else {
+      text('session-overview-title', 'Session details unavailable');
+      for (const key of ['required', 'unsaved', 'review', 'recent']) text('session-count-' + key, '—');
+      const explanation = document.querySelector('#session-overview > p');
+      if (explanation) explanation.textContent = 'Refresh this page to load sign-in history. Connection checks are still running.';
     }
     if (required && mode === 'online') { title = required === 1 ? 'One account needs sign-in' : required + ' accounts need sign-in'; detail = 'Tasks for those accounts are waiting for you. Use the highlighted website cards to reconnect.'; mode = 'attention'; }
     const key = [mode, title, detail, health.local.state, health.remote.state].join('|');

@@ -34,7 +34,7 @@ const fixtureContext={
   await Promise.all([page.waitForURL(u=>u.searchParams.get('notice')==='site-added'),page.getByRole('button',{name:'Add website',exact:true}).click()]);
   let card=page.locator('article.site-card').filter({has:page.getByRole('heading',{name:'Gmail',exact:true})});
   await Promise.all([page.waitForURL(u=>u.searchParams.get('notice')==='login-started'),card.getByRole('button',{name:'Connect website',exact:true}).click()]);
-  assert.equal(starts,1);assert.equal(await page.getByRole('button',{name:'Sign in again',exact:true}).isDisabled(),true);
+  assert.equal(starts,1);assert.equal(await page.getByRole('button',{name:'Sign-in window open',exact:true}).isDisabled(),true);
   assert.ok(await page.getByRole('heading',{name:'Finish connecting Gmail',exact:true}).isVisible());
   await page.reload();assert.equal(starts,1,'GET reload must not reopen login');
   await Promise.all([page.waitForURL(u=>u.searchParams.get('notice')==='session-saved'),page.getByRole('button',{name:'Save session & return to background',exact:true}).click()]);
@@ -76,13 +76,51 @@ const fixtureContext={
   assert.ok(!(await page.content()).includes('FAKE_BROWSER_TEST_TOKEN_123'));
   for(const event of observed){assert.equal(event.origin,ORIGIN);assert.equal(event.referer,ORIGIN+'/');assert.equal(event.status,303);}
   assert.deepEqual(observed.map(e=>e.path),['/sites/add','/login','/login/finish','/login','/sites/remove','/transport']);
+  const daysAgo = days => new Date(Date.now() - days * 86400000).toISOString();
+  sites = [
+    {id:'stale-fixture',name:'Previously verified',url:'https://stale.example/',lastSavedAt:daysAgo(14)},
+    {id:'old-fixture',name:'Older checkpoint',url:'https://older.example/',lastSavedAt:daysAgo(14)},
+    {id:'unsaved-fixture',name:'New website',url:'https://new.example/'},
+    {id:'recent-fixture',name:'Recently used',url:'https://recent.example/',lastSavedAt:daysAgo(14)},
+    {id:'new-save-fixture',name:'New saved session',url:'https://saved.example/',lastSavedAt:daysAgo(0.01)},
+    {id:'required-fixture',name:'Reconnect needed',url:'https://required.example/',lastSavedAt:daysAgo(14)}
+  ];
+  accountObservations = [{siteId:'stale-fixture',state:'not-checked',lastVerifiedAt:daysAgo(2)},{siteId:'recent-fixture',state:'verified',lastVerifiedAt:daysAgo(0.01)},{siteId:'required-fixture',state:'sign-in-required',observedAt:daysAgo(0)}];
   await page.goto(home);
+  await page.locator('[data-site-id="stale-fixture"][data-session-kind="stale"]').waitFor();
+  const expectedKinds = {'stale-fixture':'stale','old-fixture':'old-save','unsaved-fixture':'never-saved','recent-fixture':'recent','new-save-fixture':'unverified','required-fixture':'required'};
+  for (const [id, kind] of Object.entries(expectedKinds)) assert.equal(await page.locator('[data-site-id="'+id+'"]').getAttribute('data-session-kind'),kind);
+  assert.equal(await page.locator('[data-site-id="stale-fixture"] .verified-time').textContent(),'2 days ago');
+  assert.equal(await page.locator('[data-site-id="old-fixture"] .saved-time').textContent(),'14 days ago');
+  assert.equal(await page.locator('[data-site-id="unsaved-fixture"] .saved-time').textContent(),'Not recorded');
+  assert.ok(await page.locator('[data-site-id="stale-fixture"] .verified-time').getAttribute('title'));
+  assert.equal(await page.locator('#session-count-required').textContent(),'1');
+  assert.equal(await page.locator('#session-count-unsaved').textContent(),'1');
+  assert.equal(await page.locator('#session-count-review').textContent(),'3');
+  assert.equal(await page.locator('#session-count-recent').textContent(),'1');
+  await page.getByLabel('Website name',{exact:true}).fill('Freshness refresh keeps my draft');
+  accountObservations[0]={siteId:'stale-fixture',state:'verified',lastVerifiedAt:daysAgo(0)};
+  await refresh();await page.locator('[data-site-id="stale-fixture"][data-session-kind="recent"]').waitFor();
+  assert.equal(await page.locator('#session-count-recent').textContent(),'2');
+  assert.equal(await page.getByLabel('Website name',{exact:true}).inputValue(),'Freshness refresh keeps my draft');
+  accountObservations[0]={siteId:'stale-fixture',state:'not-checked',lastVerifiedAt:daysAgo(2)};
+  await refresh();await page.locator('[data-site-id="stale-fixture"][data-session-kind="stale"]').waitFor();
+  if(process.env.BACKGROUND_BROWSER_UI_PREVIEW)await page.screenshot({path:process.env.BACKGROUND_BROWSER_UI_PREVIEW,fullPage:true});
   const overflow=[];
   for(const width of [320,390,680,768,960,1024,1440]){
    await page.setViewportSize({width,height:1000});
    if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) overflow.push(width);
   }
   assert.deepEqual(overflow,[]);
-  console.log(JSON.stringify({ok:true,realBrowserForms:observed.length,addSite:true,selectedSiteLogin:true,explicitSessionSave:true,windowCloseRefresh:true,removeShortcut:true,refreshDoesNotReopenLogin:true,transportSettingsPreserved:true,csrfOriginPreserved:true,liveOfflineStatus:true,observedSignInAttention:true,recoveryStatus:true,pollFailureVisible:true,unsavedFormPreserved:true,noHorizontalOverflow:true,allBrowserEffectsStubbed:true,productionProfileUntouched:true}));
+  const fallbackPage=await context.newPage();
+  await fallbackPage.route(url=>url.pathname==='/session-view.js',route=>route.abort());
+  await fallbackPage.goto(home);
+  await fallbackPage.getByRole('heading',{name:'Session details unavailable',exact:true}).waitFor();
+  assert.equal(await fallbackPage.locator('#session-count-recent').textContent(),'—');
+  healthMode='offline';
+  await Promise.all([fallbackPage.waitForResponse(r=>new URL(r.url()).pathname==='/status'),fallbackPage.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')))]);
+  await fallbackPage.getByRole('heading',{name:'Background Browser is offline',exact:true}).waitFor();
+  await fallbackPage.close();
+  console.log(JSON.stringify({ok:true,realBrowserForms:observed.length,addSite:true,selectedSiteLogin:true,explicitSessionSave:true,windowCloseRefresh:true,removeShortcut:true,refreshDoesNotReopenLogin:true,transportSettingsPreserved:true,csrfOriginPreserved:true,liveOfflineStatus:true,observedSignInAttention:true,recoveryStatus:true,pollFailureVisible:true,unsavedFormPreserved:true,noHorizontalOverflow:true,sessionAgeVisible:true,sixFreshnessStates:true,liveFreshnessAndCountsRefresh:true,missingSharedAssetKeepsHealthPolling:true,allBrowserEffectsStubbed:true,productionProfileUntouched:true}));
  } finally { await browser.close();await new Promise(resolve=>server.close(resolve)); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

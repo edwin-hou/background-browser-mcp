@@ -39,6 +39,7 @@ const { createSiteStore, validId } = require('./sites.cjs');
 const { finishLogin } = require('../login-control.cjs');
 const { createDashboardHealth } = require('./health.cjs');
 const DASHBOARD_CLIENT = fs.readFileSync(path.join(__dirname, 'dashboard-client.js'), 'utf8');
+const SESSION_VIEW = fs.readFileSync(path.join(__dirname, 'session-view.js'), 'utf8');
 function syncSavedSession(sites, state) {
   if (!state.active && state.status === 'session-saved' && state.savedAt) sites.markSaved(state.siteId, state.savedAt);
 }
@@ -46,12 +47,13 @@ function accountStates(root, sites) {
   return sites.map(site => {
     const filename = createHash('sha256').update(site.id).digest('hex') + '.json';
     const value = read(path.join(root, 'setup', 'account-observations', filename));
-    const valid = value?.version === 1 && value.siteId === site.id && ['sign-in-required', 'verified'].includes(value.state) &&
-      typeof value.observedAt === 'string' && !isNaN(Date.parse(value.observedAt)) &&
-      Date.parse(value.observedAt) <= Date.now() + 60000 &&
-      !(site.lastSavedAt && Date.parse(site.lastSavedAt) > Date.parse(value.observedAt)) &&
-      (value.state !== 'verified' || Date.now() - Date.parse(value.observedAt) < 86400000);
-    return { siteId: site.id, state: valid ? value.state : 'not-checked', observedAt: valid ? value.observedAt : null, savedAt: site.lastSavedAt || null };
+    const now = Date.now(), observedTime = typeof value?.observedAt === 'string' ? Date.parse(value.observedAt) : NaN;
+    const validObservation = value?.version === 1 && value.siteId === site.id && ['sign-in-required', 'verified'].includes(value.state) &&
+      !isNaN(observedTime) && observedTime <= now + 60000;
+    const valid = validObservation && !(site.lastSavedAt && Date.parse(site.lastSavedAt) > observedTime) &&
+      (value.state !== 'verified' || now - observedTime < 86400000);
+    const lastVerifiedAt = validObservation && value.state === 'verified' ? new Date(observedTime).toISOString() : null;
+    return { siteId: site.id, state: valid ? value.state : 'not-checked', observedAt: valid ? value.observedAt : null, savedAt: site.lastSavedAt || null, lastVerifiedAt };
   });
 }
 const PLUGIN_URL = 'https://chatgpt.com/';
@@ -69,11 +71,12 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
       const url = new URL(req.url, origin);
       if (url.origin !== origin || url.searchParams.getAll('token').length !== 1 || !same(url.searchParams.get('token'), ctx.token)) return send(403, 'Open your private setup shortcut.');
       const rawPath = req.url.split('?')[0];
-      if (!['/', '/status', '/dashboard-client.js', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
+      if (!['/', '/status', '/dashboard-client.js', '/session-view.js', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
       if (req.method === 'GET' && url.pathname === '/') {
         const connectionHealth = ctx.health ? await ctx.health() : null;
         return send(200, page({ ...ctx, connectionHealth }, NOTICES[url.searchParams.get('notice')] || ''), true);
       }
+      if (req.method === 'GET' && url.pathname === '/session-view.js') return send(200, SESSION_VIEW, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
       if (req.method === 'GET' && url.pathname === '/dashboard-client.js') return send(200, DASHBOARD_CLIENT, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
       if (req.method === 'GET' && url.pathname === '/status') {
         try {

@@ -14,6 +14,7 @@ const tests = [
   'runtime/setup/test.cjs',
   'runtime/setup/health-test.cjs',
   'runtime/setup/account-view-test.cjs',
+  'runtime/setup/session-view-test.cjs',
   'runtime/setup/sites-test.cjs',
   'runtime/gateway/test.mjs',
   'runtime/gateway/transport-test.mjs',

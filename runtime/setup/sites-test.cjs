@@ -27,7 +27,7 @@ try {
   check(() => assert.ok(!html.includes('<img src=x')));
   check(() => assert.ok(!html.includes('NEVER_RENDER_THIS_TOKEN')));
   check(() => assert.ok(!html.includes('code=secret')));
-  check(() => assert.deepEqual(html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi), ['<script src="/dashboard-client.js?token=FIXTURE_TOKEN" defer></script>']));
+  check(() => assert.deepEqual(html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi), ['<script src="/session-view.js?token=FIXTURE_TOKEN" defer></script>', '<script src="/dashboard-client.js?token=FIXTURE_TOKEN" defer></script>']));
   store.remove(added.id);
   check(() => assert.equal(createSiteStore(filename).list().length, 1));
   check(() => assert.equal(fs.readFileSync(cookieSentinel, 'utf8'), 'PRESERVE_EXISTING_BROWSER_DATA'));
