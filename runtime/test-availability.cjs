@@ -64,10 +64,10 @@ function fixture(initial,{pause=false,failStart=false}={}){
     const disconnected=await f.supervisor.tick();
     ok(!disconnected.workers.service.healthy&&!disconnected.workers.portal.healthy&&f.started.length===0&&f.terminated.length===0,'Disconnected health endpoints are reported unhealthy while existing parent processes are preserved.');
 
-    const childFixture=fixture([]),child=new EventEmitter(),exitEvents=[];child.pid=12345;
+    const childFixture=fixture([]),child=new EventEmitter(),exitEvents=[];child.pid=12345;let unrefs=0;child.unref=()=>{unrefs++;};
     fs.writeFileSync(path.join(childFixture.root,'runtime-settings.json'),JSON.stringify({chromeExecutable:__filename}));
-    const tracked=defaultAdapter(childFixture.root,{onEvent:event=>exitEvents.push(event),spawnProcess:(image,args,options)=>{assert.equal(options.shell,false);assert.equal(options.windowsHide,true);return child;}});
-    await tracked.start('service');child.emit('exit',17,'SIGTERM');
+    const tracked=defaultAdapter(childFixture.root,{onEvent:event=>exitEvents.push(event),spawnProcess:(image,args,options)=>{assert.equal(options.shell,false);assert.equal(options.windowsHide,true);assert.equal(options.detached,true);assert.equal(options.stdio,'ignore');return child;}});
+    await tracked.start('service');ok(unrefs===1,'A detached worker does not hold its repair controller open.');child.emit('exit',17,'SIGTERM');
     ok(exitEvents.length===1&&exitEvents[0].event==='worker-exited'&&exitEvents[0].pid===child.pid&&exitEvents[0].exitCode===17&&exitEvents[0].signal==='SIGTERM','An exact spawned parent handle records its exit code and signal.');
     ok(!JSON.stringify(exitEvents).includes('arguments')&&!JSON.stringify(exitEvents).includes('chromeExecutable'),'Owned-child exit receipts contain no launch arguments, URLs or environment.');
 

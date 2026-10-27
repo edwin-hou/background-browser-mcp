@@ -34,6 +34,8 @@ The availability supervisor adopts matching live parent processes and repairs mi
 
 Inspection uses a single Windows process snapshot, checked against native process handles and creation times. Termination still rechecks fresh process identity. Inspection failures record safe classifications, timings, and output sizes; managed child exits record their exit code and signal when observed. Raw process arguments and error output are not included in these diagnostic receipts.
 
+The supervisor starts its service and portal parents with independent process lifetimes. On Windows this avoids Node's automatic child-job termination when the supervisor exits. Hidden windows, strict process identity, and intentional Stop remain in effect. An older already-running supervisor cannot detach its existing children retroactively: finish active browser work, perform an intentional Stop, then Start to activate this ownership change. Do not kill an old supervisor while preserving an in-progress browser page.
+
 The native GUI launcher waits for the Node supervisor, restarting abnormal exits after 5, 10, 20, then at most 30 seconds. Exit 0 ends that launcher, including duplicate-owner and intentionally disabled cases. Operating-system startup/recovery configuration is installed for the owning user. Explicit Stop persists disabled policy before shutdown markers, so repair does not fight an intentional stop.
 
 Recovery targets crashed/missing processes. A live but unhealthy parent is reported degraded and preserved. A powered-off or sleeping PC, expired login, exhausted tunnel quota, or lost internet connection requires its own remedy. Startup entries also depend on using a real path visible outside a packaged application's filesystem view.

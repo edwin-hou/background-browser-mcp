@@ -76,7 +76,9 @@ function defaultAdapter(root, {onEvent=()=>{},spawnProcess=spawn} = {}) {
     start:async kind=>{
       cachedScan=null;
       const script=path.join(root,kind==='service'?'service.cjs':'setup/portal.cjs');
-      const child=spawnProcess(process.execPath,[script],{cwd:root,shell:false,windowsHide:true,stdio:'ignore'});
+      // On Windows a non-detached child belongs to libuv's kill-on-close job.
+      // A controller crash must leave healthy workers available for adoption.
+      const child=spawnProcess(process.execPath,[script],{cwd:root,shell:false,windowsHide:true,stdio:'ignore',detached:true});
       // Keep the spawned process handle alive. Never kill an unrelated PID through a broad process-name operation.
       ownedChildren.add(child);
       child.on('error',()=>{ownedChildren.delete(child);});
@@ -86,6 +88,7 @@ function defaultAdapter(root, {onEvent=()=>{},spawnProcess=spawn} = {}) {
           exitCode:Number.isInteger(code)?code:null,signal:['SIGTERM','SIGKILL','SIGABRT'].includes(signal)?signal:null}); } catch {}
       });
       if(!child.pid)throw new Error('worker-spawn-failed');
+      child.unref();
       return {pid:child.pid,kind};
     },
     manager:()=>pipeGreeting(MANAGER_PIPE),

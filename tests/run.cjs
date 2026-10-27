@@ -10,6 +10,7 @@ const tests = [
   'runtime/test-login-control.cjs',
   'runtime/test-mcp-guardian.cjs',
   'runtime/test-availability.cjs',
+  'runtime/test-availability-detachment.cjs',
   'runtime/setup/test.cjs',
   'runtime/setup/sites-test.cjs',
   'runtime/gateway/test.mjs',
