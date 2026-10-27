@@ -13,7 +13,7 @@ const SOURCE_FILES = Object.freeze([
   'package.json', 'package-lock.json', 'service.cjs', 'login.cjs',
   'login-control.cjs', 'manual-chrome.cjs', 'session-state.cjs', 'mcp-guardian.cjs',
   'availability.cjs', 'availability-processes.ps1', 'BrowserAvailability.cs', 'runtime-paths.cjs',
-  'gateway/server.mjs', 'gateway/config.example.json',
+  'gateway/server.mjs', 'gateway/backend.mjs', 'gateway/local-bridge.mjs', 'gateway/config.example.json',
   'setup/portal.cjs', 'setup/dashboard.cjs', 'setup/sites.cjs', 'setup/ngrok.example.yml'
 ]);
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -118,7 +118,8 @@ async function main(args = process.argv.slice(2)) {
   await writeJson(path.join(root, 'runtime-settings.json'), { chromeExecutable: chromePath });
   await fs.writeFile(path.join(root, 'node-path.txt'), process.execPath + '\n', { flag: 'wx', mode: 0o600 });
   await writeJson(path.join(root, 'availability-config.json'), { version: 1, enabled: false, updatedAt: new Date().toISOString() });
-  await fs.writeFile(path.join(root, 'codex-config.example.toml'), '# Merge this section into your Codex MCP configuration. Existing settings are not changed.\n[mcp_servers.background_browser]\nurl = "http://127.0.0.1:8933/mcp"\n', { flag: 'wx' });
+  const codexExample = '# Merge this section into your Codex MCP configuration. Existing settings are not changed.\n[mcp_servers.playwright_background]\ncommand = ' + JSON.stringify(process.execPath) + '\nargs = [' + JSON.stringify(path.join(root, 'gateway', 'local-bridge.mjs')) + ']\nstartup_timeout_sec = 90\ntool_timeout_sec = 120\ndisabled_tools = ["browser_run_code_unsafe", "browser_file_upload", "browser_drop"]\n';
+  await fs.writeFile(path.join(root, 'codex-config.example.toml'), codexExample, { flag: 'wx' });
   if (!options.skipDependencies) {
     console.log('Installing the exact locked dependencies...');
     await run(process.execPath, [npmCli, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: root });

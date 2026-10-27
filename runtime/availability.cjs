@@ -23,7 +23,40 @@ function pipeGreeting(address, timeout=1000) {
 function policy(root) { return read(path.join(root,'availability-config.json'))?.enabled === true; }
 function setPolicy(root,enabled) { write(path.join(root,'availability-config.json'),{version:1,enabled,updatedAt:new Date().toISOString()}); }
 function requestStops(root) { for(const file of ['service.stop','setup/portal.stop'])fs.writeFileSync(path.join(root,file),''); }
-function defaultAdapter(root) {
+class InspectionError extends Error {
+  constructor(code, action, phase, elapsedMs, source = {}) {
+    super('Process inspection failed.'); this.code = code;
+    // Persist classifications and sizes only. Raw child output/messages can
+    // contain private command lines, URLs or authentication material.
+    this.inspection = {
+      action: action === 'terminate' ? 'terminate' : 'scan', phase,
+      elapsedMs: Math.max(0, Math.round(elapsedMs)),
+      killed: source.killed === true,
+      signal: ['SIGTERM','SIGKILL','SIGABRT'].includes(source.signal) ? source.signal : null,
+      exitCode: Number.isInteger(source.code) ? source.code : null,
+      stdoutBytes: Buffer.byteLength(source.stdout || ''), stderrBytes: Buffer.byteLength(source.stderr || '')
+    };
+  }
+}
+async function inspectProcess(action, execute, now = Date.now) {
+  const started = now(); let result;
+  try { result = await execute(); }
+  catch (error) {
+    const code = error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'INSPECTION_OUTPUT_LIMIT' :
+      error.killed === true ? 'INSPECTION_TIMEOUT' :
+      ['ENOENT','EACCES','EPERM','ETIMEDOUT'].includes(error.code) ? error.code :
+      Number.isInteger(error.code) ? 'INSPECTION_EXIT' : 'INSPECTION_FAILED';
+    throw new InspectionError(code, action, 'execute', now()-started, error);
+  }
+  let data;
+  try { data = JSON.parse(result.stdout); }
+  catch { throw new InspectionError('INSPECTION_INVALID_JSON', action, 'parse', now()-started, result); }
+  if (data?.ok !== true || (action === 'scan' && !Array.isArray(data.processes))) {
+    throw new InspectionError('INSPECTION_INVALID_RESPONSE', action, 'validate', now()-started, result);
+  }
+  return data;
+}
+function defaultAdapter(root, {onEvent=()=>{},spawnProcess=spawn} = {}) {
   const ownedChildren = new Set();
   let cachedScan = null;
   const helper=path.join(__dirname,'availability-processes.ps1');
@@ -32,8 +65,7 @@ function defaultAdapter(root) {
   const inspect=async(action,record)=>{
     const args=['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,'-Action',action,'-InstallationRoot',root,'-NodeExecutable',process.execPath,'-ChromeExecutable',chromeImage];
     if(record)args.push('-TargetPid',String(record.pid),'-BirthTicks',record.birthTicks);
-    const result=await execFileAsync(powershell,args,{shell:false,windowsHide:true,timeout:12000,maxBuffer:1024*1024});
-    const data=JSON.parse(result.stdout); if(data.ok!==true)throw new Error('process-inspection-failed'); return data;
+    return inspectProcess(action,()=>execFileAsync(powershell,args,{shell:false,windowsHide:true,timeout:12000,maxBuffer:1024*1024}));
   };
   return {
     scan:async({allowCached=false,managerPid}={})=>{
@@ -44,10 +76,15 @@ function defaultAdapter(root) {
     start:async kind=>{
       cachedScan=null;
       const script=path.join(root,kind==='service'?'service.cjs':'setup/portal.cjs');
-      const child=spawn(process.execPath,[script],{cwd:root,shell:false,windowsHide:true,stdio:'ignore'});
+      const child=spawnProcess(process.execPath,[script],{cwd:root,shell:false,windowsHide:true,stdio:'ignore'});
       // Keep the spawned process handle alive. Never kill an unrelated PID through a broad process-name operation.
       ownedChildren.add(child);
-      child.on('error',()=>{ownedChildren.delete(child);}); child.on('exit',()=>{ownedChildren.delete(child);});
+      child.on('error',()=>{ownedChildren.delete(child);});
+      child.once('exit',(code,signal)=>{
+        ownedChildren.delete(child);
+        try { onEvent({event:'worker-exited',at:new Date().toISOString(),worker:kind,pid:child.pid,
+          exitCode:Number.isInteger(code)?code:null,signal:['SIGTERM','SIGKILL','SIGABRT'].includes(signal)?signal:null}); } catch {}
+      });
       if(!child.pid)throw new Error('worker-spawn-failed');
       return {pid:child.pid,kind};
     },
@@ -116,10 +153,11 @@ function createSupervisor({root,adapter=defaultAdapter(root),enabled=()=>policy(
   function tick(){
     if(pending)return pending;
     pending=tickInternal().catch(error=>{
-      const errorCode=['ETIMEDOUT','ENOENT','EACCES','EPERM'].includes(error?.code)?error.code:'INSPECTION_FAILED';
+      const errorCode=error instanceof InspectionError ? error.code : ['ETIMEDOUT','ENOENT','EACCES','EPERM'].includes(error?.code)?error.code:'INSPECTION_FAILED';
+      const inspection=error instanceof InspectionError ? {inspection:error.inspection} : {};
       for(const worker of Object.values(workers))worker.healthy=false;
-      lastStatus={status:'health-inspection-failed',enabled:enabled(),checkedAt:new Date(adapter.now()).toISOString(),errorCode,workers:JSON.parse(JSON.stringify(workers))};
-      event('health-inspection-failed',{errorCode});
+      lastStatus={status:'health-inspection-failed',enabled:enabled(),checkedAt:new Date(adapter.now()).toISOString(),errorCode,...inspection,workers:JSON.parse(JSON.stringify(workers))};
+      event('health-inspection-failed',{errorCode,...inspection});
       throw error;
     }).finally(()=>{pending=null;});
     return pending;
@@ -151,11 +189,11 @@ async function main(args=process.argv.slice(2)) {
   try{await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(pipe,resolve);});}catch(error){if(error.code==='EADDRINUSE')return;throw error;}
   const logFile=path.join(root,'availability.log');
   const emit=entry=>{try{if(fs.existsSync(logFile)&&fs.statSync(logFile).size>262144){try{fs.unlinkSync(logFile+'.previous');}catch{}fs.renameSync(logFile,logFile+'.previous');}fs.appendFileSync(logFile,JSON.stringify(entry)+'\n',{mode:0o600});}catch{}};
-  supervisor=createSupervisor({root,onEvent:emit});
+  supervisor=createSupervisor({root,adapter:defaultAdapter(root,{onEvent:emit}),onEvent:emit});
   const timer=setInterval(()=>{try{write(statusFile,{pid:process.pid,...supervisor.status()});}catch{}},1000);timer.unref();
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>supervisor.stop());
   try{await supervisor.run();if(!policy(root))await supervisor.disable();}
   finally{clearInterval(timer);try{write(statusFile,{pid:process.pid,...supervisor.status()});}catch{}await new Promise(resolve=>server.close(resolve));}
 }
-module.exports={createSupervisor,pipeFor,policy,setPolicy,requestStops,defaultAdapter};
+module.exports={createSupervisor,pipeFor,policy,setPolicy,requestStops,defaultAdapter,inspectProcess};
 if(require.main===module)main().catch(error=>{try{write(path.join(__dirname,'availability-last-error.json'),{at:new Date().toISOString(),code:error.code||null,name:error.name||'Error'});}catch{}console.error('Availability supervisor stopped unexpectedly.');process.exitCode=1;});

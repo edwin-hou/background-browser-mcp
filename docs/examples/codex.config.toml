@@ -1,6 +1,7 @@
 # Merge into your own Codex config; preserve existing settings.
 [mcp_servers.playwright_background]
-url = "http://127.0.0.1:8933/mcp"
-startup_timeout_sec = 30
+command = "C:/Program Files/nodejs/node.exe"
+args = ["C:/Users/YourName/.background-browser/gateway/local-bridge.mjs"]
+startup_timeout_sec = 90
 tool_timeout_sec = 120
 disabled_tools = ["browser_run_code_unsafe", "browser_file_upload", "browser_drop"]

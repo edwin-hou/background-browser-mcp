@@ -49,6 +49,32 @@ async function main() {
   await disconnected.start(); created.at(-1).onclose();
   check(!disconnected.isAlive(), 'Unexpected guardian transport loss is detected for service recovery.');
   await disconnected.stop();
+
+  let stalledDeleteCalls = 0;
+  class StalledTransport extends Transport {
+    terminateSession() { stalledDeleteCalls++; return new Promise(() => {}); }
+  }
+  const stalled = createMcpGuardian({ Client, Transport: StalledTransport, url: 'http://127.0.0.1:8933/mcp', stopTimeout: 15 });
+  await stalled.start();
+  const stalledClient = created.at(-1);
+  // As in service.stopOwned(), the service has saved/closed its own browser first.
+  contextClosed = true;
+  let guard;
+  try {
+    await assert.rejects(Promise.race([
+      stalled.stop(), new Promise((resolve, reject) => { guard = setTimeout(() => reject(new Error('Unbounded guardian stop.')), 1000); })
+    ]), error => error.code === 'GUARDIAN_CLEANUP_TIMEOUT'); checks++;
+  } finally { clearTimeout(guard); }
+  check(stalledDeleteCalls === 1 && !stalledClient.connected && backendClients === 0, 'A stalled DELETE is bounded and the exact guardian client is still closed.');
+  check(!stalled.isAlive() && !stalled.hasFailed(), 'Timed-out cleanup does not leave stale guardian readiness.');
+  await stalled.stop();
+  check(stalledDeleteCalls === 1, 'Repeated stop does not repeat a stalled session DELETE.');
+
+  class RejectingTransport extends Transport { async terminateSession() { throw new Error('Synthetic DELETE failure.'); } }
+  const rejected = createMcpGuardian({ Client, Transport: RejectingTransport, url: 'http://127.0.0.1:8933/mcp' });
+  await rejected.start(); const rejectedClient = created.at(-1); contextClosed = true;
+  await assert.rejects(rejected.stop(), /Synthetic DELETE failure/); checks++;
+  check(!rejectedClient.connected && backendClients === 0, 'A failed DELETE also closes its guardian client before returning the error.');
   console.log(`${checks} guardian lifecycle checks passed.`);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

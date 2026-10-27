@@ -23,7 +23,7 @@ $ChromeImage = Canonical $ChromeExecutable
 function Argv([string]$CommandLine) {
   $count = 0; $memory = [AvailabilityNative]::CommandLineToArgvW($CommandLine, [ref]$count)
   if ($memory -eq [IntPtr]::Zero) { return @() }
-  try { $result = @(); for ($i=0; $i -lt $count; $i++) { $result += [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::ReadIntPtr($memory, $i * [IntPtr]::Size)) }; return $result }
+  try { $result = New-Object 'Collections.Generic.List[string]'; for ($i=0; $i -lt $count; $i++) { $result.Add([Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::ReadIntPtr($memory, $i * [IntPtr]::Size))) }; return $result.ToArray() }
   finally { [void][AvailabilityNative]::LocalFree($memory) }
 }
 function FlagValue($Arguments, [string]$Name) {
@@ -54,7 +54,15 @@ function Kind($Row) {
   if ($image -eq (Join-Path $Install 'ngrok\ngrok.exe') -and $argv.Count -ge 3 -and $argv[1] -eq 'http' -and $argv[2] -eq 'http://127.0.0.1:8934') { return 'ngrok' }
   return $null
 }
-function BoundRecord([int]$Id, [string]$ExpectedBirth = '') {
+function SameCreationTime($Observed, [string]$Birth) {
+  if ($Observed -isnot [DateTime] -or !$Birth) { return $false }
+  # CIM timestamps have microsecond precision; the native process handle has
+  # 100ns precision. Compare exactly at CIM's precision, without a time window.
+  $cimTicks = $Observed.ToUniversalTime().Ticks
+  $nativeTicks = [long]::Parse($Birth)
+  return ($cimTicks - ($cimTicks % 10)) -eq ($nativeTicks - ($nativeTicks % 10))
+}
+function BoundRecord([int]$Id, [string]$ExpectedBirth = '', $SnapshotRow = $null) {
   $bound = [Diagnostics.Process]::GetProcessById($Id)
   try {
     # Opening Handle before identity checks binds all later termination to this process object.
@@ -62,8 +70,13 @@ function BoundRecord([int]$Id, [string]$ExpectedBirth = '') {
     if ($bound.HasExited) { return $null }
     $birth = $bound.StartTime.ToUniversalTime().Ticks.ToString()
     if ($ExpectedBirth -and $birth -cne $ExpectedBirth) { return $null }
-    $row = Get-CimInstance Win32_Process -Filter "ProcessId = $Id"
+    # A scan already owns one CIM snapshot. Bind its PID and creation timestamp
+    # to this open process handle instead of querying WMI again for every match.
+    # Termination always performs its own fresh metadata query after binding.
+    if ($Action -eq 'scan' -and $SnapshotRow) { $row = $SnapshotRow }
+    else { $row = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" }
     if ($bound.HasExited -or !$row) { return $null }
+    if ([int]$row.ProcessId -ne $Id -or !(SameCreationTime $row.CreationDate $birth)) { return $null }
     $kind = Kind $row
     if (!$kind) { return $null }
     if ($Action -eq 'terminate') {
@@ -94,7 +107,17 @@ try {
       @{image=(Join-Path $Install 'ngrok\ngrok.exe'); command='"'+(Join-Path $Install 'ngrok\ngrok.exe')+'" http http://127.0.0.1:8934'; expected='ngrok'}
     )
     foreach ($case in $cases) { if ((Kind ([pscustomobject]@{ExecutablePath=$case.image;CommandLine=$case.command})) -cne $case.expected) { throw 'Signature boundary test failed.' } }
-    @{ok=$true; checks=$cases.Count; realProcessesInspected=$false; realProcessesTerminated=$false} | ConvertTo-Json -Compress
+    $instant = [DateTime]::SpecifyKind([DateTime]'2026-01-02T03:04:05', [DateTimeKind]::Utc).AddTicks(1234560)
+    $birthCases = @(
+      @{observed=$instant; native=$instant.Ticks.ToString(); expected=$true},
+      @{observed=$instant; native=($instant.Ticks+9).ToString(); expected=$true},
+      @{observed=$instant; native=($instant.Ticks+10).ToString(); expected=$false},
+      @{observed=$instant; native=($instant.Ticks-1).ToString(); expected=$false},
+      @{observed=$instant.ToLocalTime(); native=$instant.Ticks.ToString(); expected=$true},
+      @{observed=$null; native=$instant.Ticks.ToString(); expected=$false}
+    )
+    foreach ($case in $birthCases) { if ((SameCreationTime $case.observed $case.native) -ne $case.expected) { throw 'Creation identity boundary test failed.' } }
+    @{ok=$true; checks=($cases.Count+$birthCases.Count); realProcessesInspected=$false; realProcessesTerminated=$false} | ConvertTo-Json -Compress
   } elseif ($Action -eq 'terminate') {
     if ($TargetPid -le 0 -or !$BirthTicks) { throw 'An exact process identity is required.' }
     $record = BoundRecord $TargetPid $BirthTicks
@@ -103,7 +126,7 @@ try {
   } else {
     $records = @()
     foreach ($row in @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'chrome.exe' OR Name = 'ngrok.exe'")) {
-      try { if (!(Kind $row)) { continue }; $record = BoundRecord ([int]$row.ProcessId); if ($record) { $records += $record } } catch { }
+      try { if (!(Kind $row)) { continue }; $record = BoundRecord ([int]$row.ProcessId) '' $row; if ($record) { $records += $record } } catch { }
     }
     @{ ok=$true; processes=@($records) } | ConvertTo-Json -Compress -Depth 3
   }

@@ -3,7 +3,20 @@
 // Playwright MCP disposes its shared browser context when its last client
 // disconnects. The service therefore retains one initialized backend client
 // until it intentionally closes the context itself (after saving the profile).
-function createMcpGuardian({ Client, Transport, url, timeout = 2000 }) {
+function createMcpGuardian({ Client, Transport, url, timeout = 2000, stopTimeout = 2000 }) {
+  if (!Number.isInteger(stopTimeout) || stopTimeout < 1 || stopTimeout > 30000) throw new Error('Invalid guardian cleanup timeout.');
+  const cleanup = async operation => {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(operation),
+        new Promise((resolve, reject) => { timer = setTimeout(() => {
+          const error = new Error('Private browser lifecycle guardian cleanup timed out.');
+          error.code = 'GUARDIAN_CLEANUP_TIMEOUT'; reject(error);
+        }, stopTimeout); })
+      ]);
+    } finally { clearTimeout(timer); }
+  };
   let client = null, transport = null, alive = false, failed = false;
   return {
     isAlive: () => alive,
@@ -46,8 +59,10 @@ function createMcpGuardian({ Client, Transport, url, timeout = 2000 }) {
       alive = false;
       client = null; transport = null; failed = false;
       try {
-        if (currentTransport) await currentTransport.terminateSession();
-      } finally { if (current) await current.close(); }
+        // The SDK DELETE has no per-call timeout option. Its close method aborts
+        // pending HTTP work, so always close even when the DELETE deadline wins.
+        if (currentTransport) await cleanup(() => currentTransport.terminateSession());
+      } finally { if (current) await cleanup(() => current.close()); }
     }
   };
 }

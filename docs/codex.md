@@ -1,22 +1,21 @@
 # Connect Codex locally
 
-Start the installed browser first. In your client's MCP settings, add a **Streamable HTTP** server named `playwright_background` with this URL:
-
-```text
-http://127.0.0.1:8933/mcp
-```
-
-You can instead merge this entry into your existing `%USERPROFILE%\.codex\config.toml`. Preserve its other settings and existing server entries:
+Start the installed browser first. Merge the generated **codex-config.example.toml** from the installation folder into your existing `%USERPROFILE%\.codex\config.toml`. Preserve other settings and replace the existing browser server section rather than creating a second one. The generated paths are specific to your installation. Its shape is:
 
 ```toml
 [mcp_servers.playwright_background]
-url = "http://127.0.0.1:8933/mcp"
-startup_timeout_sec = 30
+command = "C:/Program Files/nodejs/node.exe"
+args = ["C:/Users/YourName/.background-browser/gateway/local-bridge.mjs"]
+startup_timeout_sec = 90
 tool_timeout_sec = 120
 disabled_tools = ["browser_run_code_unsafe", "browser_file_upload", "browser_drop"]
 ```
 
-The disabled tools prevent server-process code execution and local file upload through this connection. Page-context evaluation remains available for normal browser work. Loopback MCP is intended for trusted local clients; it does not require the remote gateway's OAuth.
+Use the generated file instead of copying these placeholder paths unchanged. The local bridge uses stdio and needs neither the optional remote gateway nor OAuth. It reconnects to the loopback browser service if that service restarts. It checks a cached session before dispatch and retries only explicit read-only operations. It never automatically repeats a possibly completed click, submission, evaluation, or other write; verify the outcome if an error says completion is unknown.
+
+The disabled tools prevent server-process code execution and local file upload through this connection. Page-context evaluation remains available for normal browser work.
+
+For clients that only support HTTP, the original `http://127.0.0.1:8933/mcp` endpoint remains available. A direct HTTP client may need to reinitialize its MCP session after a browser-service restart. Do not combine `url` with `command`/`args` in the same server section.
 
 Restart or reload the client's MCP connection, then confirm that browser tools are actually available in the conversation you will use. A config entry alone is not proof of a working connection. The [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) describes configuration, server policy, and client-specific reload steps.
 

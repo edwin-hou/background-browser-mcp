@@ -5,9 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, JSONRPCRequestSchema, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
+import { createBackendForwarder, BackendUnavailableError } from './backend.mjs';
 import { mcpAuthRouter, createOAuthMetadata, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidScopeError, InvalidTargetError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -270,44 +269,45 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
   app.use(mcpAuthRouter({ provider, issuerUrl: checked.base, resourceServerUrl: checked.resource, resourceName: 'Private Playwright browser', scopesSupported: [SCOPE], authorizationOptions: { rateLimit: rateLimitValidation }, tokenOptions: { rateLimit: rateLimitValidation }, clientRegistrationOptions: { rateLimit: rateLimitValidation }, revocationOptions: { rateLimit: rateLimitValidation } }));
   // Also expose the origin-level discovery URL used by some MCP clients.
   app.get('/.well-known/oauth-protected-resource', (_req, res) => res.json({ resource: checked.resource.href, authorization_servers: [checked.base.href], scopes_supported: [SCOPE], resource_name: 'Private Playwright browser' }));
-  let upstreamPromise;
-  let queue = Promise.resolve();
-  const upstream = async () => {
-    if (!upstreamPromise) upstreamPromise = (async () => {
-      const client = new Client({ name: 'private-chatgpt-gateway', version: '1.0.0' });
-      const transport = new StreamableHTTPClientTransport(new URL(backendUrl));
-      client.onclose = () => { upstreamPromise = undefined; };
-      try { await client.connect(transport); return client; }
-      catch (error) { upstreamPromise = undefined; await client.close().catch(() => {}); throw error; }
-    })();
-    return upstreamPromise;
-  };
-  const serial = operation => {
-    const result = queue.then(operation);
-    queue = result.catch(() => {});
-    return result;
-  };
-  const forward = async operation => {
-    const client = await upstream();
-    try { return await operation(client); }
-    catch (error) {
-      // Do not replay a possibly completed mutation. A later request creates a fresh upstream session.
-      upstreamPromise = undefined;
-      await client.close().catch(() => {});
-      throw error;
-    }
-  };
+  const backend = createBackendForwarder({ backendUrl });
   app.all('/mcp', requireBearerAuth({ verifier: provider, requiredScopes: [SCOPE], expectedResource: checked.resource, resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(checked.resource) }), async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
+    // These public transport requirements must be checked before forwarding a
+    // side effect, rather than rejected by the SDK after that effect occurred.
+    if (!req.headers.accept?.includes('application/json') || !req.headers.accept.includes('text/event-stream')) return res.status(406).json({ error: 'MCP Accept must include application/json and text/event-stream.' });
+    if (!req.headers['content-type']?.includes('application/json')) return res.status(415).json({ error: 'MCP requests require application/json.' });
+    if (req.headers['mcp-protocol-version'] && !SUPPORTED_PROTOCOL_VERSIONS.includes(req.headers['mcp-protocol-version'])) return res.status(400).json({ error: 'Unsupported MCP protocol version.' });
+    let forwarded, forwardedError;
+    // Validate with public SDK schemas before dispatching. Performing this stage
+    // before creating the HTTP transport allows a real 503/Retry-After response;
+    // an SDK request-handler exception alone would produce HTTP 200 JSON-RPC.
+    if (JSONRPCRequestSchema.safeParse(req.body).success) {
+      const list = ListToolsRequestSchema.safeParse(req.body);
+      const call = CallToolRequestSchema.safeParse(req.body);
+      try {
+        if (list.success) {
+          const result = await backend.listTools(list.data.params);
+          forwarded = { ...result, tools: result.tools.filter(remoteTool).map(tool => ({ ...tool, inputSchema: remoteSchema(tool.inputSchema), securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }], _meta: { ...tool._meta, securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }] } })) };
+        } else if (call.success) {
+          if (BLOCKED_TOOLS.has(call.data.params.name) || (call.data.params.arguments && Object.hasOwn(call.data.params.arguments, 'filename'))) forwarded = { isError: true, content: [{ type: 'text', text: 'This remote browser connection does not permit server execution, local file upload, or caller-selected artifact filenames.' }] };
+          else forwarded = await backend.callTool(call.data.params);
+        }
+      } catch (error) {
+        if (error instanceof BackendUnavailableError) {
+          if (res.destroyed) return;
+          if (error.retryable) res.status(503).set('Retry-After', String(error.retryAfterSeconds));
+          return res.json({ jsonrpc: '2.0', id: req.body.id, error: { code: -32002, message: error.message, data: { backendUnavailable: true, completion: error.completion, retryable: error.retryable, ...(error.retryable ? { retryAfterSeconds: error.retryAfterSeconds } : {}) } } });
+        }
+        forwardedError = error;
+      }
+    }
+    // MCP does not equate an HTTP disconnect with cancellation of a dispatched
+    // action. Finish it once, while avoiding a response write to a gone peer.
+    if (res.destroyed) return;
     const server = new Server({ name: 'private-playwright', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: 'After browser navigation or interaction, call browser_snapshot to read the page inline. Links to local artifact files returned by other browser tools are not accessible to this remote client. Use the dedicated browser profile; sign-in and MFA may require the owner.' });
-    server.setRequestHandler(ListToolsRequestSchema, () => serial(async () => {
-      const result = await forward(client => client.listTools());
-      return { ...result, tools: result.tools.filter(remoteTool).map(tool => ({ ...tool, inputSchema: remoteSchema(tool.inputSchema), securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }], _meta: { ...tool._meta, securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }] } })) };
-    }));
-    server.setRequestHandler(CallToolRequestSchema, request => {
-      if (BLOCKED_TOOLS.has(request.params.name) || (request.params.arguments && Object.hasOwn(request.params.arguments, 'filename'))) return { isError: true, content: [{ type: 'text', text: 'This remote browser connection does not permit server execution, local file upload, or caller-selected artifact filenames.' }] };
-      return serial(() => forward(client => client.callTool(request.params, undefined, { timeout: 120000 })));
-    });
+    const result = async () => { if (forwardedError) throw forwardedError; return forwarded; };
+    server.setRequestHandler(ListToolsRequestSchema, result);
+    server.setRequestHandler(CallToolRequestSchema, result);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
     try { await server.connect(transport); await transport.handleRequest(req, res, req.body); }
@@ -315,7 +315,7 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
   });
   app.get('/health', (_req, res) => res.json({ ok: true, authenticatedBrowserGateway: true }));
   app.use((err, _req, res, _next) => res.status(err.status === 413 ? 413 : 400).json({ error: 'Invalid request.' }));
-  return { app, provider, close: async () => { if (upstreamPromise) await (await upstreamPromise).close(); } };
+  return { app, provider, close: () => backend.close() };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

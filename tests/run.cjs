@@ -13,6 +13,8 @@ const tests = [
   'runtime/setup/test.cjs',
   'runtime/setup/sites-test.cjs',
   'runtime/gateway/test.mjs',
+  'runtime/gateway/transport-test.mjs',
+  'runtime/gateway/local-bridge.test.mjs',
   'scripts/test-setup.cjs',
   'tests/public-release.test.cjs',
 ];

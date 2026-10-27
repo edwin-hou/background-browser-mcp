@@ -2,7 +2,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createSupervisor, setPolicy, policy, pipeFor } = require('./availability.cjs');
+const { EventEmitter } = require('node:events');
+const { createSupervisor, setPolicy, policy, pipeFor, inspectProcess, defaultAdapter } = require('./availability.cjs');
 let checks=0;
 function ok(value,message){assert.ok(value,message);checks++;}
 const base=path.join(__dirname,'test-work');fs.mkdirSync(base,{recursive:true});
@@ -39,6 +40,36 @@ function fixture(initial,{pause=false,failStart=false}={}){
     const degraded=f.supervisor.status();
     ok(degraded.status==='health-inspection-failed'&&degraded.errorCode==='ETIMEDOUT'&&!degraded.workers.service.healthy&&!degraded.workers.portal.healthy,'A failed inspection clears stale healthy status and records only a safe error code.');
     ok(!JSON.stringify({degraded,events:f.events}).includes('Sensitive internal details'),'Inspection errors never copy raw error messages into status or logs.');
+
+    const privateText='fixture-private-token-and-url';
+    const failedInspection=async(source)=>{try{await inspectProcess('scan',async()=>{throw Object.assign(new Error(privateText),source);},()=>500);assert.fail('Inspection must fail');}catch(error){return error;}};
+    const timeout=await failedInspection({killed:true,signal:'SIGTERM',stdout:privateText,stderr:privateText});
+    ok(timeout.code==='INSPECTION_TIMEOUT'&&timeout.inspection.killed&&timeout.inspection.signal==='SIGTERM','A child timeout is classified separately from generic inspection failures.');
+    const nonzero=await failedInspection({code:1,killed:false,stderr:privateText});
+    ok(nonzero.code==='INSPECTION_EXIT'&&nonzero.inspection.exitCode===1,'A helper exit code survives only as safe structured metadata.');
+    const overlimit=await failedInspection({code:'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',killed:true,stdout:privateText});
+    ok(overlimit.code==='INSPECTION_OUTPUT_LIMIT','Output-limit termination is not mislabeled as a timeout.');
+    let invalidJson;try{await inspectProcess('scan',async()=>({stdout:privateText,stderr:privateText}));}catch(error){invalidJson=error;}
+    ok(invalidJson.code==='INSPECTION_INVALID_JSON'&&invalidJson.inspection.phase==='parse','Invalid JSON is distinguished from a process execution failure.');
+    await assert.rejects(()=>inspectProcess('scan',async()=>({stdout:'{"ok":true}',stderr:''})),{code:'INSPECTION_INVALID_RESPONSE'});checks++;
+    const good=await inspectProcess('scan',async()=>({stdout:'{"ok":true,"processes":[]}',stderr:''}));
+    ok(good.ok&&good.processes.length===0,'An empty valid scan is accepted so a disappeared parent can recover.');
+    ok(!JSON.stringify([timeout.inspection,nonzero.inspection,overlimit.inspection,invalidJson.inspection]).includes(privateText),'Structured diagnostics retain sizes without private output or raw messages.');
+    f.adapter.scan=async()=>{throw timeout;};await assert.rejects(()=>f.supervisor.tick());
+    ok(f.supervisor.status().errorCode==='INSPECTION_TIMEOUT'&&f.supervisor.status().inspection.stdoutBytes===Buffer.byteLength(privateText),'Supervisor status carries the safe inspection classification and sizes.');
+    ok(f.started.length===0&&f.terminated.length===0&&!f.supervisor.status().workers.service.healthy,'Failed identity inspection never starts or terminates a process or retains stale healthy status.');
+    f.adapter.scan=async()=>f.records;await f.supervisor.tick();
+    ok(f.supervisor.status().workers.service.healthy&&f.supervisor.status().workers.portal.healthy&&f.started.length===0,'A recovered inspection adopts the same working parents without restarting them.');
+    f.adapter.manager=async()=>null;f.adapter.portal=async()=>false;
+    const disconnected=await f.supervisor.tick();
+    ok(!disconnected.workers.service.healthy&&!disconnected.workers.portal.healthy&&f.started.length===0&&f.terminated.length===0,'Disconnected health endpoints are reported unhealthy while existing parent processes are preserved.');
+
+    const childFixture=fixture([]),child=new EventEmitter(),exitEvents=[];child.pid=12345;
+    fs.writeFileSync(path.join(childFixture.root,'runtime-settings.json'),JSON.stringify({chromeExecutable:__filename}));
+    const tracked=defaultAdapter(childFixture.root,{onEvent:event=>exitEvents.push(event),spawnProcess:(image,args,options)=>{assert.equal(options.shell,false);assert.equal(options.windowsHide,true);return child;}});
+    await tracked.start('service');child.emit('exit',17,'SIGTERM');
+    ok(exitEvents.length===1&&exitEvents[0].event==='worker-exited'&&exitEvents[0].pid===child.pid&&exitEvents[0].exitCode===17&&exitEvents[0].signal==='SIGTERM','An exact spawned parent handle records its exit code and signal.');
+    ok(!JSON.stringify(exitEvents).includes('arguments')&&!JSON.stringify(exitEvents).includes('chromeExecutable'),'Owned-child exit receipts contain no launch arguments, URLs or environment.');
 
     f=fixture([rec('service',20),rec('chrome',21),rec('mcp',22),rec('gateway',23),rec('ngrok',24)]);
     await f.supervisor.tick();

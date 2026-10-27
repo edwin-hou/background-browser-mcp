@@ -16,11 +16,7 @@ The project uses Playwright MCP, a local setup dashboard, a persistent Chrome pr
 
 4. Open the generated **Open browser setup.url** shortcut in your installation folder. The default installation is `%USERPROFILE%\.background-browser`.
 5. Add a website, select **Sign in**, and complete its password, SSO, or MFA prompts directly in the separate login window. Return to the dashboard and select **Save session & return to background**.
-6. Add this server to Codex as **Streamable HTTP**, then restart/reload its MCP connection:
-
-   ```text
-   http://127.0.0.1:8933/mcp
-   ```
+6. Merge the generated **codex-config.example.toml** from your installation folder into your Codex MCP configuration, then reload the connection. It includes the correct paths for the local bridge, which keeps the Codex connection alive across browser-service restarts. The [Codex instructions](docs/codex.md) also describe the compatible direct HTTP connection.
 
 Ask Codex: “Use my background browser to open the website I saved and verify that I am signed in.” A saved website card or a healthy service does not establish that its account session works.
 
