@@ -12,7 +12,7 @@ const { spawn } = require('node:child_process');
 const SOURCE_FILES = Object.freeze([
   'package.json', 'package-lock.json', 'service.cjs', 'login.cjs',
   'login-control.cjs', 'manual-chrome.cjs', 'session-state.cjs', 'mcp-guardian.cjs',
-  'availability.cjs', 'availability-processes.ps1', 'BrowserAvailability.cs', 'runtime-paths.cjs',
+  'availability.cjs', 'connection-status.cjs', 'availability-processes.ps1', 'BrowserAvailability.cs', 'runtime-paths.cjs',
   'gateway/server.mjs', 'gateway/backend.mjs', 'gateway/local-bridge.mjs', 'gateway/account-status.mjs', 'gateway/config.example.json',
   'setup/portal.cjs', 'setup/dashboard.cjs', 'setup/compact-styles.cjs', 'setup/dashboard-client.js', 'setup/session-view.js', 'setup/health.cjs', 'setup/sites.cjs', 'setup/ngrok.example.yml'
 ]);

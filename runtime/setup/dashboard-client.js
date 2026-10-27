@@ -6,7 +6,7 @@
   const sessionDetailsReady = typeof sessionApi?.sessionView === 'function' && typeof sessionApi?.summarize === 'function';
   const statusUrl = new URL('/status', location.origin);
   statusUrl.searchParams.set('token', new URL(location.href).searchParams.get('token') || '');
-  let pending = false, finishing = false, failures = 0, previous = '', timer;
+  let pending = false, finishing = false, failures = 0, previous = '', lastRequestFailureKey = '', timer;
   const text = (id, value) => { const element = document.getElementById(id); if (element && element.textContent !== value) element.textContent = value; };
   const labels = { online: 'Connected', offline: 'Offline', paused: 'Signing in', stopped: 'Stopped', checking: 'Checking', unconfigured: 'Not configured' };
   function render(health) {
@@ -65,6 +65,32 @@
       const explanation = document.querySelector('#session-overview > p');
       if (explanation) explanation.textContent = 'Refresh this page to load sign-in history. Connection checks are still running.';
     }
+    const failedRequests = [];
+    for (const channel of ['chatgpt', 'codex']) {
+      const record = health.requests?.[channel] || {state:'unseen'};
+      const fallbackState = ['unseen','succeeded','failed','unavailable'].includes(record.state) ? record.state : 'unavailable';
+      const view = typeof sessionApi?.connectionView === 'function' ? sessionApi.connectionView(record) : {state:fallbackState,label:{unseen:'No request seen',succeeded:'Reached browser',failed:'Request failed',unavailable:'Status unavailable'}[fallbackState],detail:fallbackState==='failed' ? 'A browser request failed. Account tasks must wait for reconnection; verify any uncertain action before retrying.' : 'Refresh the page to load request details.',uncertainEarlierAction:record.completion==='unknown' && fallbackState==='succeeded'};
+      const name = channel === 'chatgpt' ? 'ChatGPT' : 'Codex';
+      text('request-' + channel + '-summary', name + ': ' + view.label + (view.uncertainEarlierAction ? ' · Earlier action unconfirmed' : ''));
+      const summary = document.getElementById('request-' + channel + '-summary'), row = document.querySelector('[data-request-channel="' + channel + '"]');
+      if (summary) { summary.dataset.requestState = view.state; summary.dataset.requestUncertain = String(view.uncertainEarlierAction); }
+      if (row) row.dataset.requestState = view.state;
+      text('request-' + channel + '-detail', view.detail);
+      if (view.lastContact) setTime(document.getElementById('request-' + channel + '-contact'), view.lastContact);
+      if (view.lastSuccess) setTime(document.getElementById('request-' + channel + '-success'), view.lastSuccess);
+      if (view.lastFailure) setTime(document.getElementById('request-' + channel + '-failure'), view.lastFailure);
+      const uncertain = document.getElementById('request-' + channel + '-uncertain');
+      if (uncertain) uncertain.hidden = !view.uncertainEarlierAction;
+      if (view.state === 'failed') failedRequests.push({channel,name,record,view});
+    }
+    const failureKey = failedRequests.map(value => value.channel + ':' + (value.record.lastFailureAt || 'unknown')).join('|');
+    if (failureKey && failureKey !== lastRequestFailureKey) { const details = document.getElementById('request-status'); if (details) details.open = true; }
+    lastRequestFailureKey = failureKey;
+    if (failedRequests.length && mode === 'online') {
+      mode = 'request-failed';
+      title = failedRequests.length === 1 ? failedRequests[0].name + ' browser request failed' : 'Browser requests are waiting for reconnection';
+      detail = failedRequests[0].view.detail + (required ? ' ' + required + (required === 1 ? ' account also needs sign-in.' : ' accounts also need sign-in.') : '');
+    }
     if (required && mode === 'online') { title = required === 1 ? 'One account needs sign-in' : required + ' accounts need sign-in'; detail = 'Tasks for those accounts are waiting for you. Use the highlighted website cards to reconnect.'; mode = 'attention'; }
     const key = [mode, title, detail, health.local.state, health.remote.state].join('|');
     if (key !== previous) {
@@ -101,6 +127,13 @@
     if (loginPanel) { loginPanel.hidden = false; loginPanel.dataset.loginPhase = 'unavailable'; }
     text('login-title', 'Sign-in window status unavailable');
     text('login-detail', 'The save button will be available when the connection can verify your sign-in window.');
+    for (const channel of ['chatgpt','codex']) {
+      text('request-' + channel + '-summary', (channel === 'chatgpt' ? 'ChatGPT' : 'Codex') + ': Status unavailable');
+      text('request-' + channel + '-detail', 'Request history cannot currently be checked. The page will keep checking.');
+      const summary = document.getElementById('request-' + channel + '-summary'), row = document.querySelector('[data-request-channel="' + channel + '"]');
+      if (summary) summary.dataset.requestState = 'unavailable';
+      if (row) row.dataset.requestState = 'unavailable';
+    }
     text('connection-health-title', accessDenied ? 'Open your private setup shortcut' : 'Connection status is unavailable');
     text('connection-health-detail', accessDenied ? 'This page no longer has setup access. Reopen your saved shortcut; browser tasks will wait for reconnection.' : 'Browser tasks are waiting. Reopen your setup shortcut after the local service reconnects. This page will keep checking.');
     text('local-connection-state', 'Status unavailable'); text('remote-connection-state', 'Status unavailable');

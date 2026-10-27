@@ -35,9 +35,10 @@ check(() => assert.deepEqual(loginView(failedFixture, { mode: 'online' }), { act
 check(() => assert.ok(!JSON.stringify(loginView(failedFixture, { mode: 'online' })).includes('TEST_PRIVATE')));
 check(() => assert.equal(loginView({ status: 'session-saved', active: false, error: failedFixture.error }, { mode: 'online' }).failed, false));
 let saved = null, saves = 0, logins = 0, finishes = 0;
+let requestState = null;
 let currentLogin = { active: false }, healthState = { version: 1, mode: 'online', local: { state: 'online' }, remote: { state: 'unconfigured' } };
 const token = 'TEST_LOCAL_SETUP_TOKEN_1234567890123456789012';
-const handler = makeHandler({ token, saved: () => saved, status: () => ({ message: 'Test status' }), owner: () => 'TEST_OWNER_SECRET', sites: () => [{id:'vanderbilt-brightspace',name:'Vanderbilt Brightspace',url:'https://brightspace.vanderbilt.edu/'}], browser: () => ({ready:true,headless:true,status:'running'}), health: async () => healthState, login: () => currentLogin, startLogin: async () => { logins++; }, finishLogin: async () => { finishes++; }, addSite: async () => {}, removeSite: async () => {}, save: async value => { saved = value; saves++; } });
+const handler = makeHandler({ token, saved: () => saved, status: () => ({ message: 'Test status' }), owner: () => 'TEST_OWNER_SECRET', sites: () => [{id:'vanderbilt-brightspace',name:'Vanderbilt Brightspace',url:'https://brightspace.vanderbilt.edu/'}], browser: () => ({ready:true,headless:true,status:'running'}), health: async () => healthState, requests: async () => requestState, login: () => currentLogin, startLogin: async () => { logins++; }, finishLogin: async () => { finishes++; }, addSite: async () => {}, removeSite: async () => {}, save: async value => { saved = value; saves++; } });
 async function hit(method, route, options = {}) {
   const req = Readable.from([Buffer.from(options.body || '')]); req.method = method; req.url = route;
   req.headers = { host: '127.0.0.1:8936', origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded', ...options.headers };
@@ -91,6 +92,16 @@ async function hit(method, route, options = {}) {
   check(() => assert.equal(JSON.parse(status.body).version, 1));
   check(() => assert.ok(!status.body.includes(token) && !status.body.includes('TEST_OWNER_SECRET')));
   check(() => assert.deepEqual(JSON.parse(status.body).login, { active: false, canFinish: false, failed: false, phase: 'idle', siteId: null, siteName: null }));
+  check(() => assert.equal(JSON.parse(status.body).requests, null));
+  const at=new Date().toISOString();
+  requestState={chatgpt:{state:'failed',lastContactAt:at,lastFailureAt:at,lastSuccessAt:null,failureCode:'BACKEND_UNAVAILABLE',completion:'not-dispatched'},codex:{state:'unseen'}};
+  const requestStatus=await hit('GET','/status'+auth);
+  check(() => assert.equal(JSON.parse(requestStatus.body).requests.chatgpt.state,'failed'));
+  check(() => assert.equal(JSON.parse(requestStatus.body).mode,'online'));
+  const failureHome=await hit('GET','/'+auth);
+  check(() => assert.match(failureHome.body,/ChatGPT: Request failed/));
+  check(() => assert.ok(!requestStatus.body.includes(token) && !requestStatus.body.includes('TEST_OWNER_SECRET')));
+  requestState=null;
   currentLogin = fixtureLogin; healthState = { ...healthState, mode: 'checking' };
   const opening = await hit('GET', '/status' + auth);
   check(() => assert.deepEqual(JSON.parse(opening.body).login, loginView(fixtureLogin, healthState)));

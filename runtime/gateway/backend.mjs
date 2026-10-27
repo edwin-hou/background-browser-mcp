@@ -6,14 +6,14 @@ import { createAccountObserver } from './account-status.mjs';
 export class BackendUnavailableError extends Error {
   constructor(completion = 'not-dispatched') {
     super(completion === 'unknown'
-      ? 'Browser connection failed after dispatch. The operation may have completed; verify its result before retrying.'
-      : 'The background browser is unavailable. Pause this task and wait for its owner to reconnect it through the private setup dashboard; do not keep retrying.');
+      ? 'Browser connection failed after dispatch. Pause the account task and wait for the owner to reconnect Background Browser. The operation may have completed; verify its result before retrying. Do not switch browsers, profiles, account connectors, APIs, or public search to continue this account task.'
+      : 'Background Browser is unavailable. Pause this account task and wait for its owner to reconnect through the private setup dashboard; do not keep retrying or switch to other browsers, profiles, account connectors, APIs, or public search.');
     this.name = 'BackendUnavailableError';
     this.code = 'BACKEND_UNAVAILABLE';
     this.completion = completion;
     this.retryable = completion !== 'unknown';
     this.retryAfterSeconds = this.retryable ? 2 : undefined;
-    this.waitForOwner = completion !== 'unknown';
+    this.waitForOwner = true;
   }
 }
 
@@ -35,7 +35,7 @@ export function isReadOnlyBrowserCall(params) {
   return ['browser_snapshot', 'browser_take_screenshot', 'browser_console_messages', 'browser_network_requests'].includes(params.name);
 }
 
-export function createBackendForwarder({ backendUrl = 'http://127.0.0.1:8933/mcp', connectTimeoutMs = 3000, pingTimeoutMs = 2000, toolTimeoutMs = 120000, accountObserver = createAccountObserver({ root: fileURLToPath(new URL('../', import.meta.url)) }) } = {}) {
+export function createBackendForwarder({ backendUrl = 'http://127.0.0.1:8933/mcp', root = fileURLToPath(new URL('../', import.meta.url)), connectTimeoutMs = 3000, pingTimeoutMs = 2000, toolTimeoutMs = 120000, accountObserver = createAccountObserver({ root }) } = {}) {
   let current, queue = Promise.resolve(), stopped = false;
   const canceled = signal => { if (signal?.aborted) throw signal.reason || new Error('Request canceled.'); };
   const discard = async entry => {

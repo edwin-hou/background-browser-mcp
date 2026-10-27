@@ -6,7 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const git = process.platform === 'win32' ? 'git.exe' : 'git';
-const forbiddenDirectories = new Set(['node_modules', 'profiles', 'artifacts', 'backups', 'logs', 'work', '.cache', 'account-observations']);
+const forbiddenDirectories = new Set(['node_modules', 'profiles', 'artifacts', 'backups', 'logs', 'work', '.cache', 'account-observations', 'connection-observations']);
 const forbiddenNames = new Set([
   'access-token.txt', 'owner-secret.txt', 'transport-secret.json', 'oauth-state.json',
   'config.json', 'runtime-settings.json', 'installation.json', 'node-path.txt',

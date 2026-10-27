@@ -5,12 +5,14 @@ const { makeHandler, syncSavedSession } = require('./portal.cjs');
 let ORIGIN;
 let sites = [{id:'vanderbilt-brightspace',name:'Vanderbilt Brightspace',url:'https://brightspace.vanderbilt.edu/',lastSavedAt:'2026-10-14T23:00:00.000Z'}];
 let login = {active:false}, saved = null, starts = 0, finishes = 0, transports = 0, removes = 0;
+let requestStates={chatgpt:{state:'unseen'},codex:{state:'unseen'}};
 let healthMode = 'online', remoteState = 'unconfigured', accountObservations = [], statusUnavailable = false, helperOpening = false;
 const token='TEST_BROWSER_FORM_TOKEN_123456789012345678901', observed=[];
 const fixtureContext={
  token,sites:()=>sites,login:()=>login,browser:()=>({ready:!login.active,headless:true,status:login.active?'paused-for-login':'running'}),
  saved:()=>saved,status:()=>({message:'Isolated dashboard verification'}),owner:()=> 'FIXTURE_OWNER_NOT_A_REAL_SECRET',
  health:async()=>{if(statusUnavailable)throw new Error('Synthetic status failure.');const mode=login.active?(helperOpening?'checking':'paused'):healthMode;return {version:1,checkedAt:new Date().toISOString(),mode,messageCode:'SYNTHETIC_FIXTURE',local:{state:mode},remote:{state:remoteState},waitingForOwner:healthMode==='offline'};},
+ requests:()=>requestStates,
  accounts:()=>{syncSavedSession({markSaved:(id,savedAt)=>{sites=sites.map(s=>s.id===id?{...s,lastSavedAt:savedAt}:s);}},login);return sites.map(site=>({...accountObservations.find(a=>a.siteId===site.id),siteId:site.id,state:accountObservations.find(a=>a.siteId===site.id)?.state||'not-checked',savedAt:site.lastSavedAt||null}));},
  startLogin:async id=>{const site=sites.find(s=>s.id===id);assert.ok(site);starts++;login={active:true,helperActive:true,status:'login-open',siteId:id,siteName:site.name,url:site.url};},
  finishLogin:async()=>{assert.ok(login.active);finishes++;sites=sites.map(s=>s.id===login.siteId?{...s,lastSavedAt:new Date().toISOString()}:s);login={active:false,status:'session-saved'};},
@@ -104,6 +106,25 @@ const fixtureContext={
   assert.ok(await page.getByRole('button',{name:'Save & close sign-in window',exact:true}).isDisabled());
   assert.ok(!(await page.content()).includes('FIXTURE_PRIVATE_HELPER_DETAILS'));
   login={active:false,status:'session-saved'};await refresh();
+  await page.locator('#add-website > summary').click();
+  await page.getByLabel('Website name',{exact:true}).fill('Request failure preserves draft');
+  const failedAt=new Date().toISOString();
+  requestStates.chatgpt={state:'failed',lastContactAt:failedAt,lastFailureAt:failedAt,lastSuccessAt:null,failureCode:'BACKEND_UNAVAILABLE',completion:'not-dispatched'};
+  await refresh();await page.getByRole('heading',{name:'ChatGPT browser request failed',exact:true}).waitFor();
+  assert.equal(await page.locator('#remote-connection-state').textContent(),'Reachable');
+  assert.equal(await page.locator('#request-status').evaluate(e=>e.open),true);
+  assert.match(await page.locator('#request-chatgpt-summary').textContent(),/Request failed/);
+  assert.ok(await page.locator('#request-chatgpt-failure').getAttribute('datetime'));
+  assert.equal(await page.getByLabel('Website name',{exact:true}).inputValue(),'Request failure preserves draft');
+  requestStates.codex={state:'succeeded',lastContactAt:new Date().toISOString(),lastSuccessAt:new Date().toISOString()};
+  await page.locator('#request-status').evaluate(e=>{e.open=false});await refresh();
+  assert.ok(await page.getByRole('heading',{name:'ChatGPT browser request failed',exact:true}).isVisible());
+  assert.equal(await page.locator('#request-status').evaluate(e=>e.open),false,'same failure must not repeatedly expand a panel the owner closed');
+  const recoveredAt=new Date().toISOString();
+  requestStates.chatgpt={state:'succeeded',lastContactAt:recoveredAt,lastSuccessAt:recoveredAt,lastFailureAt:failedAt,failureCode:'COMPLETION_UNKNOWN',completion:'unknown'};
+  await refresh();await page.getByRole('heading',{name:'Your browser is connected',exact:true}).waitFor();
+  assert.equal(await page.locator('#request-chatgpt-uncertain').getAttribute('hidden'),null,'later request success does not verify an earlier action outcome');
+  requestStates={chatgpt:{state:'unseen'},codex:{state:'unseen'}};await refresh();
   const daysAgo = days => new Date(Date.now() - days * 86400000).toISOString();
   sites = [
     {id:'stale-fixture',name:'Previously verified',url:'https://stale.example/',lastSavedAt:daysAgo(14)},
@@ -134,7 +155,12 @@ const fixtureContext={
   assert.equal(await page.getByLabel('Website name',{exact:true}).inputValue(),'Freshness refresh keeps my draft');
   accountObservations[0]={siteId:'stale-fixture',state:'not-checked',lastVerifiedAt:daysAgo(2)};
   await refresh();await page.locator('[data-site-id="stale-fixture"][data-session-kind="stale"]').waitFor();
-  if(process.env.BACKGROUND_BROWSER_UI_PREVIEW)await page.screenshot({path:process.env.BACKGROUND_BROWSER_UI_PREVIEW,fullPage:true});
+  if(process.env.BACKGROUND_BROWSER_UI_PREVIEW){
+    const at=new Date().toISOString();requestStates.chatgpt={state:'failed',lastContactAt:at,lastFailureAt:at,lastSuccessAt:null,failureCode:'COMPLETION_UNKNOWN',completion:'unknown'};
+    await refresh();await page.getByRole('heading',{name:'ChatGPT browser request failed',exact:true}).waitFor();
+    await page.screenshot({path:process.env.BACKGROUND_BROWSER_UI_PREVIEW,fullPage:true});
+    requestStates={chatgpt:{state:'unseen'},codex:{state:'unseen'}};await refresh();
+  }
   const overflow=[];
   for(const width of [320,390,680,768,960,1024,1440]){
    await page.setViewportSize({width,height:1000});
@@ -154,6 +180,6 @@ const fixtureContext={
   await Promise.all([fallbackPage.waitForResponse(r=>new URL(r.url()).pathname==='/status'),fallbackPage.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')))]);
   await fallbackPage.getByRole('heading',{name:'Background Browser is offline',exact:true}).waitFor();
   await fallbackPage.close();
-  console.log(JSON.stringify({ok:true,realBrowserForms:observed.length,addSite:true,selectedSiteLogin:true,explicitSessionSave:true,windowCloseRefresh:true,removeShortcut:true,refreshDoesNotReopenLogin:true,transportSettingsPreserved:true,csrfOriginPreserved:true,liveOfflineStatus:true,observedSignInAttention:true,recoveryStatus:true,pollFailureVisible:true,unsavedFormPreserved:true,noHorizontalOverflow:true,sessionAgeVisible:true,sixFreshnessStates:true,liveFreshnessAndCountsRefresh:true,missingSharedAssetKeepsHealthPolling:true,persistentSaveControl:true,openingToReadyWithoutReload:true,controlledSaveFromLivePanel:true,finishWorksWithoutSessionFormatter:true,safeLoginFailureFeedback:true,allBrowserEffectsStubbed:true,productionProfileUntouched:true}));
+  console.log(JSON.stringify({ok:true,realBrowserForms:observed.length,addSite:true,selectedSiteLogin:true,explicitSessionSave:true,windowCloseRefresh:true,removeShortcut:true,refreshDoesNotReopenLogin:true,transportSettingsPreserved:true,csrfOriginPreserved:true,liveOfflineStatus:true,observedSignInAttention:true,recoveryStatus:true,pollFailureVisible:true,unsavedFormPreserved:true,noHorizontalOverflow:true,sessionAgeVisible:true,sixFreshnessStates:true,liveFreshnessAndCountsRefresh:true,missingSharedAssetKeepsHealthPolling:true,persistentSaveControl:true,openingToReadyWithoutReload:true,controlledSaveFromLivePanel:true,finishWorksWithoutSessionFormatter:true,safeLoginFailureFeedback:true,requestFailureWhileGatewayReachable:true,perConnectionRecovery:true,uncertainActionRetained:true,allBrowserEffectsStubbed:true,productionProfileUntouched:true}));
  } finally { await browser.close();await new Promise(resolve=>server.close(resolve)); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

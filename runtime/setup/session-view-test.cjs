@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
-const { sessionView, summarize } = require('./session-view.js');
+const { sessionView, summarize, connectionView } = require('./session-view.js');
 const now = Date.parse('2026-10-27T16:00:00Z'), day = 86400000;
 const ago = age => new Date(now - age).toISOString();
 const view = (record, options = {}) => sessionView(record, { now, ...options });
@@ -23,4 +23,13 @@ check(view({ savedAt: ago(13 * day) }).saved.label === '13 days ago', 'elapsed t
 check(view({ state: 'verified', observedAt: ago(60000) }).verified.iso === ago(60000), 'absolute verified timestamp remains available');
 check(view({ savedAt: ago(day) }).verified.label === 'Not recorded', 'missing verification is never invented');
 assert.deepEqual(summarize([view({}), view({ state: 'sign-in-required' }), view({ savedAt: ago(day) }), view({ state: 'verified', observedAt: ago(60000) })]), { required: 1, unsaved: 1, review: 1, recent: 1 }); checks++;
+const request = value => connectionView(value, { now });
+check(request({state:'unseen'}).label === 'No request seen', 'no contact is never represented as connected');
+check(request({state:'succeeded',lastContactAt:ago(60000)}).label === 'Reached browser', 'observed request success is separate from account authentication');
+check(request({state:'failed',failureCode:'BACKEND_UNAVAILABLE'}).detail.includes('waiting for reconnection'), 'connection failure instructs account work to wait');
+check(request({state:'failed',failureCode:'COMPLETION_UNKNOWN',completion:'unknown'}).detail.includes('verify its outcome'), 'uncertain action warns against replay');
+check(request({state:'succeeded',completion:'unknown',lastFailureAt:ago(60000)}).uncertainEarlierAction, 'later success does not establish the outcome of an earlier action');
+check(!request({state:'succeeded',completion:'unknown',lastFailureAt:'invalid'}).uncertainEarlierAction, 'invalid history does not create action uncertainty');
+check(request({state:'PRIVATE_RAW_ERROR',failureCode:'SECRET_MESSAGE'}).state === 'unavailable', 'unrecognized state is never rendered as success');
+check(!JSON.stringify(request({state:'failed',failureCode:'SECRET_MESSAGE',url:'SECRET_URL'})).includes('SECRET_'), 'only fixed labels reach the UI');
 console.log(JSON.stringify({ ok: true, checks, realAccountsUsed: false, browserLaunched: false }));

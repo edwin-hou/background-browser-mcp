@@ -45,5 +45,15 @@
     for (const view of views) if (Object.hasOwn(counts, view.bucket)) counts[view.bucket]++;
     return counts;
   }
-  return { sessionView, summarize };
+  function connectionView(record, { now = Date.now() } = {}) {
+    const state = ['unseen', 'succeeded', 'failed', 'unavailable'].includes(record?.state) ? record.state : 'unavailable';
+    const lastContact = dateInfo(record?.lastContactAt, now), lastSuccess = dateInfo(record?.lastSuccessAt, now), lastFailure = dateInfo(record?.lastFailureAt, now);
+    const failureCode = ['BACKEND_UNAVAILABLE', 'COMPLETION_UNKNOWN', 'CLIENT_DISCONNECTED', 'REQUEST_FAILED'].includes(record?.failureCode) ? record.failureCode : null;
+    const completion = ['not-dispatched', 'read-only', 'unknown'].includes(record?.completion) ? record.completion : null;
+    const messages = { BACKEND_UNAVAILABLE: 'The browser connection was unavailable. Account tasks are waiting for reconnection.', COMPLETION_UNKNOWN: 'The connection failed after an action was sent. Reconnect, then verify its outcome before retrying.', CLIENT_DISCONNECTED: 'The client disconnected before the reply completed. Reconnect before continuing.', REQUEST_FAILED: 'The browser request could not complete. Account tasks are waiting for reconnection.' };
+    const label = { unseen: 'No request seen', succeeded: 'Reached browser', failed: 'Request failed', unavailable: 'Status unavailable' }[state];
+    const detail = state === 'failed' ? messages[failureCode] || messages.REQUEST_FAILED : state === 'succeeded' ? 'A forwarded request completed. Website sign-in is checked separately.' : state === 'unseen' ? 'No authenticated browser request has been received on this connection.' : 'Request history could not be read. Reachability is shown separately.';
+    return { state, label, detail, lastContact, lastSuccess, lastFailure, uncertainEarlierAction: state === 'succeeded' && completion === 'unknown' && Boolean(lastFailure.iso) };
+  }
+  return { sessionView, summarize, connectionView };
 });

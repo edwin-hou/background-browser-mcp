@@ -11,6 +11,7 @@ const tests = [
   'runtime/test-mcp-guardian.cjs',
   'runtime/test-availability.cjs',
   'runtime/test-availability-detachment.cjs',
+  'runtime/test-connection-status.cjs',
   'runtime/setup/test.cjs',
   'runtime/setup/health-test.cjs',
   'runtime/setup/account-view-test.cjs',

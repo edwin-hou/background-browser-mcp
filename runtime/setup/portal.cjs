@@ -38,6 +38,7 @@ const { renderDashboard } = require('./dashboard.cjs');
 const { createSiteStore, validId } = require('./sites.cjs');
 const { finishLogin } = require('../login-control.cjs');
 const { createDashboardHealth } = require('./health.cjs');
+const { readConnectionStatus } = require('../connection-status.cjs');
 const DASHBOARD_CLIENT = fs.readFileSync(path.join(__dirname, 'dashboard-client.js'), 'utf8');
 const SESSION_VIEW = fs.readFileSync(path.join(__dirname, 'session-view.js'), 'utf8');
 function syncSavedSession(sites, state) {
@@ -86,9 +87,9 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
       const rawPath = req.url.split('?')[0];
       if (!['/', '/status', '/dashboard-client.js', '/session-view.js', '/login', '/login/finish', '/sites/add', '/sites/remove', '/transport'].includes(rawPath)) return send(404, 'Not found.');
       if (req.method === 'GET' && url.pathname === '/') {
-        const connectionHealth = ctx.health ? await ctx.health() : null;
+        const [connectionHealth, requestOutcomes] = await Promise.all([ctx.health ? ctx.health() : null, ctx.requests ? ctx.requests() : null]);
         const currentLogin = typeof ctx.login === 'function' ? ctx.login() : {};
-        return send(200, page({ ...ctx, connectionHealth, login: loginView(currentLogin, connectionHealth) }, NOTICES[url.searchParams.get('notice')] || ''), true);
+        return send(200, page({ ...ctx, connectionHealth, requestOutcomes, login: loginView(currentLogin, connectionHealth) }, NOTICES[url.searchParams.get('notice')] || ''), true);
       }
       if (req.method === 'GET' && url.pathname === '/session-view.js') return send(200, SESSION_VIEW, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
       if (req.method === 'GET' && url.pathname === '/dashboard-client.js') return send(200, DASHBOARD_CLIENT, false, { 'Content-Type': 'application/javascript; charset=utf-8' });
@@ -98,7 +99,8 @@ function makeHandler(ctx, { origin = ORIGIN } = {}) {
           const accounts = typeof ctx.accounts === 'function' ? ctx.accounts() : [];
           const currentLogin = typeof ctx.login === 'function' ? ctx.login() : {};
           const login = loginView(currentLogin, health);
-          return send(200, JSON.stringify({ ...health, accounts, login }), false, { 'Content-Type': 'application/json; charset=utf-8' });
+          const requests = ctx.requests ? await ctx.requests() : null;
+          return send(200, JSON.stringify({ ...health, accounts, login, requests }), false, { 'Content-Type': 'application/json; charset=utf-8' });
         } catch { return send(503, JSON.stringify({ error: 'Connection status unavailable.' }), false, { 'Content-Type': 'application/json; charset=utf-8' }); }
       }
       if (req.method !== 'POST') return send(405, 'Method not allowed.');
@@ -161,7 +163,7 @@ async function main() {
   };
   const server = http.createServer(makeHandler({ token, saved, status: () => status, pluginUrl: PLUGIN_URL,
     sites: () => { syncSavedSession(sites, loginState()); return sites.list(); }, browser: () => read(path.join(ROOT, 'service-state.json')) || {}, login: loginState,
-    health: () => health.read(), accounts: () => { syncSavedSession(sites, loginState()); return accountStates(ROOT, sites.list()); },
+    health: () => health.read(), requests: () => readConnectionStatus(ROOT), accounts: () => { syncSavedSession(sites, loginState()); return accountStates(ROOT, sites.list()); },
     owner: () => { try { const text = fs.readFileSync(path.join(ROOT, 'gateway', 'owner-secret.txt'), 'utf8').trim(); return /^[A-Za-z0-9_-]{43}$/.test(text) ? text : ''; } catch { return ''; } },
     save: async value => {
       const linked = read(path.join(ROOT, 'gateway', 'config.json'));

@@ -5,13 +5,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema, JSONRPCRequestSchema, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
-import { createBackendForwarder, BackendUnavailableError } from './backend.mjs';
+import { ListToolsRequestSchema, CallToolRequestSchema, JSONRPCRequestSchema, SUPPORTED_PROTOCOL_VERSIONS, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { createBackendForwarder, BackendUnavailableError, isReadOnlyBrowserCall } from './backend.mjs';
+import connectionStatus from '../connection-status.cjs';
 import { mcpAuthRouter, createOAuthMetadata, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidScopeError, InvalidTargetError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
 export const DEFAULT_DIR = dirname(fileURLToPath(import.meta.url));
+const { createConnectionReporter } = connectionStatus;
 export const SCOPE = 'browser:control';
 const MAX_REGISTERED_CLIENTS = 100;
 const UNUSED_CLIENT_LIFETIME = 24 * 3600;
@@ -209,7 +211,7 @@ class OwnerProvider {
   }
 }
 
-export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'http://127.0.0.1:8933/mcp', testing = false } = {}) {
+export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'http://127.0.0.1:8933/mcp', testing = false, connectionReporter, backendForwarder } = {}) {
   const checked = canonicalConfig(config, testing);
   const provider = new OwnerProvider(checked, dataDir);
   const app = express();
@@ -269,7 +271,36 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
   app.use(mcpAuthRouter({ provider, issuerUrl: checked.base, resourceServerUrl: checked.resource, resourceName: 'Private Playwright browser', scopesSupported: [SCOPE], authorizationOptions: { rateLimit: rateLimitValidation }, tokenOptions: { rateLimit: rateLimitValidation }, clientRegistrationOptions: { rateLimit: rateLimitValidation }, revocationOptions: { rateLimit: rateLimitValidation } }));
   // Also expose the origin-level discovery URL used by some MCP clients.
   app.get('/.well-known/oauth-protected-resource', (_req, res) => res.json({ resource: checked.resource.href, authorization_servers: [checked.base.href], scopes_supported: [SCOPE], resource_name: 'Private Playwright browser' }));
-  const backend = createBackendForwarder({ backendUrl });
+  // Explicit fixture data directories isolate both diagnostics and account
+  // observations from the real installation's runtime state.
+  const stateRoot = resolve(dataDir) === resolve(DEFAULT_DIR) ? dirname(DEFAULT_DIR) : resolve(dataDir);
+  const backend = backendForwarder || createBackendForwarder({ backendUrl, root: stateRoot });
+  const reporter = connectionReporter || createConnectionReporter({ root: stateRoot, channel: 'chatgpt' });
+  const reporting = new Set();
+  const note = (method, ...args) => {
+    const task = Promise.resolve().then(() => reporter?.[method]?.(...args)).catch(() => {});
+    reporting.add(task); task.finally(() => reporting.delete(task));
+  };
+  const flushConnectionStatus = async () => { while (reporting.size) await Promise.allSettled([...reporting]); };
+  const watchRequest = res => {
+    let active = false, claimed = false, readOnly = false, outcome = null;
+    const report = (method, ...args) => { if (!active || claimed) return; claimed = true; note(method, ...args); };
+    res.once('finish', () => {
+      if (outcome?.code) report('failure', outcome.code, outcome.completion);
+      else if (outcome?.success && res.statusCode < 400) report('success');
+      else if (active) report('failure', 'REQUEST_FAILED', readOnly ? 'read-only' : 'unknown');
+    });
+    res.once('close', () => { if (!res.writableFinished) report('failure', 'CLIENT_DISCONNECTED', readOnly ? 'read-only' : 'unknown'); });
+    return {
+      begin: observation => { active = true; readOnly = observation; if (res.destroyed) report('failure', 'CLIENT_DISCONNECTED', readOnly ? 'read-only' : 'unknown'); },
+      succeeded: () => { outcome = { success: true }; },
+      failed: error => {
+        if (error instanceof BackendUnavailableError) outcome = { code: error.completion === 'unknown' ? 'COMPLETION_UNKNOWN' : 'BACKEND_UNAVAILABLE', completion: error.completion };
+        else if (error instanceof McpError) outcome = { success: true }; // A normal RPC error proves the connection answered.
+        else outcome = { code: 'REQUEST_FAILED', completion: readOnly ? 'read-only' : 'unknown' };
+      },
+    };
+  };
   app.all('/mcp', requireBearerAuth({ verifier: provider, requiredScopes: [SCOPE], expectedResource: checked.resource, resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(checked.resource) }), async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
     // These public transport requirements must be checked before forwarding a
@@ -278,6 +309,7 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
     if (!req.headers['content-type']?.includes('application/json')) return res.status(415).json({ error: 'MCP requests require application/json.' });
     if (req.headers['mcp-protocol-version'] && !SUPPORTED_PROTOCOL_VERSIONS.includes(req.headers['mcp-protocol-version'])) return res.status(400).json({ error: 'Unsupported MCP protocol version.' });
     let forwarded, forwardedError;
+    const receipt = watchRequest(res);
     // Validate with public SDK schemas before dispatching. Performing this stage
     // before creating the HTTP transport allows a real 503/Retry-After response;
     // an SDK request-handler exception alone would produce HTTP 200 JSON-RPC.
@@ -286,13 +318,16 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
       const call = CallToolRequestSchema.safeParse(req.body);
       try {
         if (list.success) {
+          receipt.begin(true);
           const result = await backend.listTools(list.data.params);
           forwarded = { ...result, tools: result.tools.filter(remoteTool).map(tool => ({ ...tool, inputSchema: remoteSchema(tool.inputSchema), securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }], _meta: { ...tool._meta, securitySchemes: [{ type: 'oauth2', scopes: [SCOPE] }] } })) };
+          receipt.succeeded();
         } else if (call.success) {
           if (BLOCKED_TOOLS.has(call.data.params.name) || (call.data.params.arguments && Object.hasOwn(call.data.params.arguments, 'filename'))) forwarded = { isError: true, content: [{ type: 'text', text: 'This remote browser connection does not permit server execution, local file upload, or caller-selected artifact filenames.' }] };
-          else forwarded = await backend.callTool(call.data.params);
+          else { receipt.begin(isReadOnlyBrowserCall(call.data.params)); forwarded = await backend.callTool(call.data.params); receipt.succeeded(); }
         }
       } catch (error) {
+        receipt.failed(error);
         if (error instanceof BackendUnavailableError) {
           if (res.destroyed) return;
           if (error.retryable) res.status(503).set('Retry-After', String(error.retryAfterSeconds));
@@ -304,18 +339,18 @@ export function createGateway({ config, dataDir = DEFAULT_DIR, backendUrl = 'htt
     // MCP does not equate an HTTP disconnect with cancellation of a dispatched
     // action. Finish it once, while avoiding a response write to a gone peer.
     if (res.destroyed) return;
-    const server = new Server({ name: 'private-playwright', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: 'After browser navigation or interaction, call browser_snapshot to read the page inline. If Background Browser is unavailable, pause the task and wait for its owner to reconnect it through the private setup dashboard; do not keep retrying. An interrupted write may have completed: verify its outcome before repeating it. Local artifact links are not accessible remotely. Use the dedicated profile; sign-in and MFA belong to the owner.' });
+    const server = new Server({ name: 'private-playwright', version: '1.1.0' }, { capabilities: { tools: {} }, instructions: 'For every task requiring the user’s account, use the dedicated Background Browser. After navigation or interaction, call browser_snapshot to read the page inline. If Background Browser is unavailable, disconnected, disabled, or the required account needs sign-in, preserve the pending task and wait for the owner to reconnect through the private setup dashboard. Do not keep retrying or continue the account task through another browser, profile, account connector, API, cache, or public search unless the user explicitly authorizes a different route. Reverify the requested authenticated page after reconnection. An interrupted action may have completed: verify its outcome before repeating it and never replay an uncertain action. Local artifact links are not accessible remotely. Sign-in and MFA belong to the owner.' });
     const result = async () => { if (forwardedError) throw forwardedError; return forwarded; };
     server.setRequestHandler(ListToolsRequestSchema, result);
     server.setRequestHandler(CallToolRequestSchema, result);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
     try { await server.connect(transport); await transport.handleRequest(req, res, req.body); }
-    catch { if (!res.headersSent) res.status(503).json({ error: 'Browser backend unavailable.' }); }
+    catch (error) { receipt.failed(error); if (!res.headersSent) res.status(503).json({ error: 'Browser backend unavailable.' }); else if (!res.writableEnded) res.destroy(); }
   });
   app.get('/health', (_req, res) => res.json({ ok: true, authenticatedBrowserGateway: true }));
   app.use((err, _req, res, _next) => res.status(err.status === 413 ? 413 : 400).json({ error: 'Invalid request.' }));
-  return { app, provider, close: () => backend.close() };
+  return { app, provider, flushConnectionStatus, close: async () => { await backend.close(); await flushConnectionStatus(); } };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

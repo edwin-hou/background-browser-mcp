@@ -15,6 +15,8 @@
 | Dashboard shows Sign-in required | Open that card's Reconnect account action, complete website sign-in/MFA yourself, and save the session. The pending task waits; authenticated access must be verified before continuing. |
 | Dashboard shows Sign-in status not checked | No recent supported authentication evidence was observed. This does not mean the account expired. Website checkpoints alone do not prove authentication. |
 | Dashboard says Connection status is unavailable | It cannot currently obtain live status; keep the page open for another check or reopen the private setup shortcut. It does not infer that every website account is signed out. |
+| Gateway is reachable but ChatGPT request failed | The request-history banner records the actual failure separately. Pause account work, reconnect, then verify access. A later successful request clears connection failure but an interrupted action still needs outcome verification. |
+| No ChatGPT request is recorded | No authenticated forwarded request has reached this installation. Check the plugin connection/exposure in ChatGPT; a local dashboard cannot observe a request blocked before reaching the PC. |
 | Navigation returns a local file path | Ask for `browser_snapshot` without a filename to get inline page state. |
 | ChatGPT cannot create the plugin in the desktop dialog | Use ChatGPT on the web with the same account; check account/workspace access and the current official setup guide. |
 | ChatGPT OAuth fails | Use your own stable domain, OAuth with DCR, public-client auth `none`, and scope `browser:control`. Verify exact callback/issuer values. Leave CIMD/OIDC off for this gateway. |
